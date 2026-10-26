@@ -1,0 +1,80 @@
+# Deny every file by default. Only the exceptions below may enter Git.
+*
+
+# Repository configuration and the minimal entry point.
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/pyproject.toml
+!/requirements.txt
+
+# Implementation and supporting Python code.
+!/src/
+!/src/**/
+!/src/**/*.py
+!/src/.gitkeep
+!/scripts/
+!/scripts/**/
+!/scripts/**/*.py
+
+# Tests and small, explicitly synthetic text fixtures.
+!/tests/
+!/tests/**/
+!/tests/**/*.py
+!/tests/fixtures/**/*.json
+!/tests/fixtures/**/*.csv
+!/tests/fixtures/**/*.txt
+!/tests/fixtures/.gitkeep
+
+# Example-only configuration; real configuration remains untracked.
+!/config/
+!/config/**/
+!/config/**/*.example.toml
+!/config/**/*.example.json
+!/config/.gitkeep
+
+# Detection rules, when implemented and reviewed.
+!/rules/
+!/rules/**/
+!/rules/**/*.yar
+!/rules/**/*.yara
+!/rules/.gitkeep
+
+# Documentation is allowed by exact filename, not by a blanket *.md rule.
+!/docs/
+!/docs/TESTING.md
+
+# Publication checks and local commit protection.
+!/.githooks/
+!/.githooks/pre-commit
+!/.githooks/pre-push
+!/.github/
+!/.github/workflows/
+!/.github/workflows/repository-checks.yml
+
+# Never admit generated caches, even inside otherwise allowed folders.
+**/__pycache__/
+**/.venv/
+**/node_modules/
+**/private/
+**/internal/
+**/notes/
+**/archive/
+**/archives/
+**/backups/
+**/literature/
+**/thesis/
+**/data/
+**/datasets/
+**/samples/
+**/payloads/
+**/results/
+**/logs/
+**/reports/
+**/prompts/
+**/transcripts/
+**/tmp/
+**/venv/
+*.pyc
+*.pyo
+.DS_Store
