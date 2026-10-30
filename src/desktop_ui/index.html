@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="lt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Project Aegis</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <button class="brand" data-page="home" aria-label="Aegis pradžia"><span class="brand-mark">A</span><span>Aegis<span class="brand-sub">TYRIMO DARBO ERDVĖ</span></span></button>
+    <nav aria-label="Pagrindinė navigacija">
+      <button data-page="home" class="nav active">Pradžia</button>
+      <button data-page="files" class="nav">Failai</button>
+      <button data-page="results" class="nav">Rezultatai</button>
+      <button data-page="guide" class="nav">Vadovas</button>
+    </nav>
+    <div class="top-actions"><span id="connection" class="connection"><i></i>Tikrinama</span><button class="icon-button" data-page="settings" aria-label="Nustatymai">⚙</button></div>
+  </header>
+  <main id="main" aria-live="polite"><div class="loading">Ruošiama darbo erdvė…</div></main>
+  <footer><span><i class="tiny-dot"></i> Vietinė laboratorija <span class="foot-separator">/</span> Kontrolinis etapas</span><span id="status">Parengta</span><button id="refresh" aria-label="Atnaujinti būseną">↻</button></footer>
+  <div id="shade" class="shade hidden"></div>
+  <aside id="drawer" class="drawer hidden" aria-label="Laboratorija"></aside>
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>

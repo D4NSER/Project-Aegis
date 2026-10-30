@@ -1,0 +1,18 @@
+{
+  "run_id": "control-accounting-001",
+  "mode": "control",
+  "workspace": ".",
+  "protocol_version": "control-accounting-v1",
+  "av": {
+    "state_id": "simulated-av-v1",
+    "product": "SIMULATED; no antivirus invoked",
+    "product_version": null,
+    "engine_version": null,
+    "signature_version": null
+  },
+  "yara": {
+    "state_id": "simulated-yara-v1",
+    "engine_version": null,
+    "ruleset_sha256": null
+  }
+}

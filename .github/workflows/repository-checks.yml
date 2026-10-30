@@ -7,7 +7,10 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -17,3 +20,10 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Inspect indexed files and committed history
         run: python3 scripts/check_repository.py --history
+      - name: Check desktop JavaScript syntax
+        run: node --check src/desktop_ui/app.js
+      - name: Compile native macOS host
+        if: runner.os == 'macOS'
+        run: >-
+          clang -fobjc-arc src/mac_app.m -framework Cocoa -framework WebKit
+          -o "$RUNNER_TEMP/aegis-control"

@@ -11,6 +11,7 @@ EXACT_PATHS = {
     ".gitignore", ".gitattributes", "README.md", "pyproject.toml",
     "requirements.txt", "docs/TESTING.md", ".githooks/pre-commit", ".githooks/pre-push",
     ".github/workflows/repository-checks.yml", "src/.gitkeep",
+    "src/mac_app.m", "src/desktop_ui/index.html", "src/desktop_ui/app.css", "src/desktop_ui/app.js",
     "config/.gitkeep", "rules/.gitkeep", "tests/fixtures/.gitkeep",
 }
 BLOCKED_PARTS = {

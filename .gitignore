@@ -12,6 +12,10 @@
 !/src/
 !/src/**/
 !/src/**/*.py
+!/src/mac_app.m
+!/src/desktop_ui/index.html
+!/src/desktop_ui/app.css
+!/src/desktop_ui/app.js
 !/src/.gitkeep
 !/scripts/
 !/scripts/**/

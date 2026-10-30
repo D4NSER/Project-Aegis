@@ -24,6 +24,12 @@ class PathTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(boundary.allowed_path(name))
 
+    def test_native_ui_is_allowed_by_exact_path_only(self):
+        for name in ('src/mac_app.m','src/desktop_ui/index.html','src/desktop_ui/app.css','src/desktop_ui/app.js'):
+            self.assertTrue(boundary.allowed_path(name),name)
+        for name in ('src/other.m','src/desktop_ui/private.html','src/desktop_ui/dump.json','src/desktop_ui/sample.exe','src/desktop_ui/vendor.js'):
+            self.assertFalse(boundary.allowed_path(name),name)
+
 
 class ContentTests(unittest.TestCase):
     def test_ordinary_code(self):
@@ -87,6 +93,13 @@ class GitIndexTests(unittest.TestCase):
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             with self.subTest(name=name):
                 self.assertEqual(1, result.returncode)
+
+    def test_gitignore_native_ui_matches_boundary_allowlist(self):
+        for name,allowed in [('src/mac_app.m',True),('src/desktop_ui/index.html',True),
+            ('src/desktop_ui/app.css',True),('src/desktop_ui/app.js',True),
+            ('src/desktop_ui/vendor.js',False),('src/desktop_ui/output.json',False),('src/other.m',False)]:
+            result=subprocess.run(['git','-C',str(self.root),'check-ignore','--no-index',name],capture_output=True)
+            self.assertEqual(1 if allowed else 0,result.returncode,name)
 
     def test_staged_blob_is_checked_instead_of_clean_working_copy(self):
         self.stage("src/code.py", b"gh" + b"p_" + b"x" * 36)
