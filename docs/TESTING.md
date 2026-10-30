@@ -4,6 +4,11 @@ Automated tests validate the publication boundary and control-stage accounting:
 file identity, lineage and split separation, missing responses, functionality
 exclusions, shared comparison denominators, and detection-loss arithmetic.
 They use generated inert text and synthetic labels/responses, not malware.
+The complete suite imports Tkinter for the reused UI/worker classes; it does not
+create GUI windows. Use a Python installation with Tkinter support. GitHub CI
+installs `python3-tk` on Ubuntu and the matching `python-tk` formula on macOS,
+then runs the same suite on both platforms, checks JavaScript syntax and compiles
+the native host on macOS. These are code checks, not a live Fusion experiment.
 
 ```sh
 python3 -m unittest discover -s tests -v

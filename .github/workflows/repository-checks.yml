@@ -8,6 +8,7 @@ permissions:
 jobs:
   check:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -16,7 +17,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Test repository boundary
+      - name: Install Linux Tkinter support
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-tk
+          python3 -c "import tkinter"
+      - name: Install macOS Tkinter support
+        if: runner.os == 'macOS'
+        run: |
+          python_minor=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+          brew install "python-tk@$python_minor"
+          python3 -c "import tkinter"
+      - name: Test control logic and repository boundary
         run: python3 -m unittest discover -s tests -v
       - name: Inspect indexed files and committed history
         run: python3 scripts/check_repository.py --history
