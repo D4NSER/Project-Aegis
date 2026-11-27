@@ -96,6 +96,8 @@ Lineage rules:
 Metrics, with each rate given as numerator and denominator:
 
 - `ERROR`, `INCONCLUSIVE`, `NOT_RUN` and absent observations stay unknown.
+  An AV `DETECTED` observation names `REALTIME` or `CUSTOM_SCAN` in
+  `detected_by`; every row lists it as `av_detected_by`.
 - The supplementation scenario uses eligible evaluation files only. AV, YARA
   and their OR are compared on files where **both** AV and YARA responses are
   valid; others are listed in `incomplete_ids`. Each tool reports TP, FN, FP,
@@ -190,6 +192,56 @@ YARA compile/match outcomes that the laboratory records.
 
 Tests use generated header-only PE stubs (a DOS/PE header and inert marker
 text, no sections or code) in temporary directories and recorded results.
+
+## Detector checks of selected files and the accounting bridge
+
+`src/guest_research_scan.py` holds the guest-side decisions; files are
+scanned, never executed. Tests drive it with a fake Windows system, so no
+Defender, YARA or sample runs.
+
+- AV, state A: Defender and real-time protection must be on, otherwise
+  `ERROR`/`STATE_MISMATCH`. One file per run. After the fixed waiting period,
+  a threat-history resource or the `Path` field of event 1116/1117 that
+  equals the file's path, recorded at or after the check started, gives
+  `DETECTED` with `detected_by: REALTIME`. Every such record's detection
+  source must fit the label (`Real-Time Protection`, threat source type 3 for
+  `REALTIME`; `User` or `System`, types 1–2 for `CUSTOM_SCAN`); a contrary or
+  missing source makes the outcome `INCONCLUSIVE`. These source values are to
+  be confirmed with the laboratory's EICAR controls. Older records and other paths do not count; an exact-path record
+  without a readable time makes the history unknown. Otherwise a missing or
+  changed file is `INCONCLUSIVE`, and a custom scan runs; a record dated after
+  its start gives `CUSTOM_SCAN`, but only when the real-time lookup was
+  readable. `NOT_DETECTED` needs exit code 0, unchanged bytes and readable
+  history; the exit code alone never decides. Any valid response also needs
+  protection on and unchanged product, engine and signature versions before
+  and after, otherwise it becomes `INCONCLUSIVE`. A scan timeout is `ERROR`.
+- YARA, state F: real-time protection must be off, and `--version` must exit
+  0 and print a version, otherwise every file is `ERROR`. The YARA executable
+  and the frozen rule set must match their pinned hashes; if either is missing
+  or differs, the check refuses to start and produces no record. Each
+  file is `MATCHED` (with rule names), `NOT_MATCHED`, `ERROR` (timeout, exit
+  code, unexpected output, unreadable or changed file) or `NOT_RUN` (missing
+  input); one file's error never stops the series.
+- Candidate rules: a compile check on an empty file, then per-file matches,
+  returned as the four-field record that `rule_workflow.accept_rule` expects.
+  Only diagnostics that point into the candidate file make `compiled: false`;
+  a technical failure while running YARA leaves `compiled: null`, so
+  acceptance stays `INCOMPLETE`. A missing or different pinned YARA
+  executable is refused before anything runs, and no record is produced.
+
+`src/scan_bridge.py` validates stored reports and writes the observation CSV
+for `src/aegis.py`, with each report as evidence. YARA `MATCHED` and
+`NOT_MATCHED` become `DETECTED` and `NOT_DETECTED`; `ERROR` and `NOT_RUN`
+stay unknown. The bridge re-checks each valid response against its evidence:
+an AV response needs state A and unchanged versions before and after, at
+least one real-time or custom-scan record whose sources fit the label, and for a negative a completed scan
+of unchanged bytes with readable history; a YARA response needs state F and a
+recorded version of the form `x.y.z`, and an incomplete one needs its reason. Tool-state IDs are derived from the Defender product, engine
+and signature versions and from the YARA version, executable and rule-set
+hashes; a series whose state changes is refused. Observations now carry
+`detected_by`, required for AV detections and forbidden otherwise.
+Deploying these checks into the VM, one AV file per restore cycle, is a
+separate laboratory step.
 
 ## Native WebKit desktop
 

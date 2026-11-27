@@ -12,7 +12,10 @@ splits without detector responses and converts catalogue selections to manifests
 `src/rule_workflow.py` writes model-facing PE descriptions, checks that a YARA
 candidate only uses features from its description, decides acceptance from
 recorded calibration results, and freezes the accepted rule set by hash; it
-runs neither a model nor YARA.
+runs neither a model nor YARA. `src/guest_research_scan.py` decides AV (state A,
+real-time then custom scan, with `detected_by`) and frozen-rule YARA (state F)
+outcomes for selected files without executing them, and `src/scan_bridge.py`
+turns those reports into accounting observations.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 

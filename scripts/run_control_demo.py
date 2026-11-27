@@ -63,6 +63,7 @@ def create_demo(output):
             observations.append(dict(zip(aegis.OBSERVATION_FIELDS, [
                 config["run_id"], name, sha, tool, status, config[tool]["state_id"],
                 "simulated-" + name + "-" + tool, timestamp, "evidence/simulation.txt",
+                "CUSTOM_SCAN" if tool == "av" and status == "DETECTED" else "",
             ])))
     write_csv(output / "manifest.csv", aegis.SAMPLE_FIELDS, samples)
     write_csv(output / "observations.csv", aegis.OBSERVATION_FIELDS, observations)

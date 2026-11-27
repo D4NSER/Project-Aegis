@@ -25,13 +25,14 @@ SAMPLE_FIELDS = (
 )
 OBSERVATION_FIELDS = (
     "run_id", "sample_id", "sha256", "tool", "status", "state_id",
-    "scan_id", "observed_at", "evidence",
+    "scan_id", "observed_at", "evidence", "detected_by",
 )
 STATUSES = {"DETECTED", "NOT_DETECTED", "ERROR", "INCONCLUSIVE", "NOT_RUN"}
 KINDS = {"original", "variant", "control_copy", "benign"}
 FUNCTIONALITY = {"PASS", "FAIL", "INCONCLUSIVE", "NOT_RUN", "NOT_APPLICABLE"}
 TESTED_FUNCTIONALITY = {"PASS", "FAIL", "INCONCLUSIVE"}
 RULESET_STATUSES = {"FROZEN", "EMPTY", "FAILED"}
+DETECTED_BY = {"REALTIME", "CUSTOM_SCAN"}
 SPLITS = ("calibration", "evaluation")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 COLLECTION_PREFIX = "collection:"
@@ -225,7 +226,8 @@ def validate_samples(rows, workspace, collection=None):
     return by_id
 
 
-def validate_observations(rows, samples, config, workspace):
+def validate_observations(rows, samples, config, workspace, detected_by=None):
+    """Statuses by (sample, tool); AV detections also record which check flagged them."""
     observations = {}
     for row in rows:
         sample = samples.get(row["sample_id"])
@@ -247,7 +249,14 @@ def validate_observations(rows, samples, config, workspace):
         if observed_at.utcoffset() is None:
             raise ValueError("Observation time must include a time zone")
         local_file(workspace, row["evidence"])
+        if tool == "av" and row["status"] == "DETECTED":
+            if row["detected_by"] not in DETECTED_BY:
+                raise ValueError("An AV detection must name REALTIME or CUSTOM_SCAN: " + row["sample_id"])
+        elif row["detected_by"]:
+            raise ValueError("Only an AV detection names the check that flagged it: " + row["sample_id"])
         observations[key] = row["status"]
+        if detected_by is not None and row["detected_by"]:
+            detected_by[row["sample_id"]] = row["detected_by"]
     return observations
 
 
@@ -402,7 +411,7 @@ def holdout_rules(samples, yara, ruleset_status):
             "incomplete_ids": sorted(r["sample_id"] for r in rows if yara[r["sample_id"]] is None)}
 
 
-def summarize(samples, observations, ruleset_status="FROZEN"):
+def summarize(samples, observations, ruleset_status="FROZEN", detected_by=None):
     if ruleset_status not in RULESET_STATUSES:
         raise ValueError("Unknown rule-set status")
     status = {(key, tool): observations.get((key, tool), "NOT_RUN") for key in samples for tool in ("av", "yara")}
@@ -449,6 +458,7 @@ def summarize(samples, observations, ruleset_status="FROZEN"):
             comparison = "_".join(["AV"] * (av[key] is None) + ["YARA"] * (yara[key] is None)) + "_INCOMPLETE"
         rows.append({"sample_id": key, "kind": row["kind"], "split": row["split"], "holdout": row["holdout"],
                      "functionality": row["functionality"], "av_status": status[(key, "av")],
+                     "av_detected_by": (detected_by or {}).get(key, ""),
                      "yara_status": status[(key, "yara")],
                      "A": av[key], "Y": yara[key], "C": combined(av[key], yara[key]),
                      "eligibility": exclusion or "ELIGIBLE", "comparison": comparison,
@@ -481,12 +491,11 @@ def tables(report):
     out = {}
     stream = io.StringIO()
     writer = csv.writer(stream, lineterminator="\n")
-    writer.writerow(["sample_id", "kind", "split", "holdout", "functionality", "av_status", "yara_status",
-                     "A", "Y", "C", "eligibility", "comparison", "detection_loss"])
+    columns = ("sample_id", "kind", "split", "holdout", "functionality", "av_status", "av_detected_by",
+               "yara_status", "A", "Y", "C", "eligibility", "comparison", "detection_loss")
+    writer.writerow(columns)
     for row in report["rows"]:
-        writer.writerow([row[k] if row[k] is not None else "" for k in (
-            "sample_id", "kind", "split", "holdout", "functionality", "av_status", "yara_status",
-            "A", "Y", "C", "eligibility", "comparison", "detection_loss")])
+        writer.writerow([row[k] if row[k] is not None else "" for k in columns])
     out["rows.csv"] = stream.getvalue()
     stream = io.StringIO()
     writer = csv.writer(stream, lineterminator="\n")
@@ -538,8 +547,9 @@ def run(config_path, manifest_path, observations_path):
     collection = config.get("collection_root")
     collection = external_path(config_path.parent / collection) if collection else None
     samples = validate_samples(read_csv(external_path(manifest_path), SAMPLE_FIELDS), workspace, collection)
+    detected_by = {}
     observations = validate_observations(read_csv(external_path(observations_path), OBSERVATION_FIELDS),
-                                         samples, config, workspace)
+                                         samples, config, workspace, detected_by)
     return {"run_id": config["run_id"], "mode": "control", "experiment_results": False,
             "notice": "Accounting check only. Supplied detector responses are simulated; no AV or YARA ran.",
             "code_sha256": digest(Path(__file__)),
@@ -547,7 +557,7 @@ def run(config_path, manifest_path, observations_path):
             "config_sha256": digest(config_path), "manifest_sha256": digest(Path(manifest_path)),
             "observations_sha256": digest(Path(observations_path)),
             "tool_states": {tool: config[tool] for tool in ("av", "yara")},
-            **summarize(samples, observations, ruleset_status)}
+            **summarize(samples, observations, ruleset_status, detected_by)}
 
 
 def write_tables(report, directory):
