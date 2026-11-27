@@ -378,6 +378,9 @@ def supplementation(samples, av, yara, ruleset_status):
               "paired_records": len(paired),
               "incomplete_ids": sorted(r["sample_id"] for r in files if r["sample_id"] not in paired_ids),
               "tools": {}}
+    if not paired:
+        return {"status": "NOT_EVALUATED", "reason": "NO_PAIRED_RECORDS", "ruleset_status": ruleset_status,
+                "paired_records": 0, "incomplete_ids": result["incomplete_ids"]}
     benign = [r for r in paired if r["kind"] == "benign"]
     for tool, value in pick.items():
         overall = confusion([value(r) for r in paired if r["kind"] != "benign"], [value(r) for r in benign])
@@ -531,13 +534,92 @@ def tables(report):
     return out
 
 
+def research_evidence(config, samples, rows, workspace):
+    """Research mode: every observation must be what a validated report says.
+
+    Returns the tool versions recorded in the evidence. Checks the freeze
+    record, the rule-set hash, non-synthetic functionality records and that
+    AV checks of evaluation variants and benign files began after freezing.
+    """
+    import run_guard
+    import scan_bridge
+    if any(row["functionality_synthetic"] is True for row in samples.values()):
+        raise ValueError("Research accounting refuses synthetic functionality records")
+    yara = config["yara"]
+    if not yara.get("freeze_record"):
+        raise ValueError("Research mode needs yara.freeze_record")
+    record, _ = run_guard.load_freeze(workspace, yara["freeze_record"])
+    if record["run_id"] != config["run_id"]:
+        raise ValueError("Freeze record belongs to a different run")
+    if record["status"] != yara["ruleset_status"] or record["ruleset_sha256"] != yara.get("ruleset_sha256"):
+        raise ValueError("Configuration rule-set status or hash differs from the freeze record")
+    if not config.get("series"):
+        raise ValueError("Research mode needs the run's detector series record")
+    series = scan_bridge.load_series(workspace, config["series"])
+    if series["run_id"] != config["run_id"]:
+        raise ValueError("Detector series belongs to a different run")
+    split = scan_bridge.segments(series["reports"], workspace, config["run_id"])
+    frozen_at = datetime.fromisoformat(record["frozen_at_utc"].replace("Z", "+00:00"))
+    by_evidence = defaultdict(list)
+    for row in rows:
+        by_evidence[row["evidence"]].append(row)
+    used = {"av": set(), "yara": set()}
+    for row in rows:
+        used[row["tool"]].add(row["evidence"])
+    for tool in ("av", "yara"):
+        named = config[tool].get("segment_id")
+        if not (used[tool] or named or split[tool]):
+            continue  # This tool produced no reports in the run, and none are claimed.
+        if not config[tool].get("state_id"):
+            raise ValueError("A tool with reports in the run needs a state ID: " + tool)
+        chosen = [seg for seg in split[tool] if seg["segment_id"] == named]
+        if not chosen:
+            raise ValueError("Configuration must name one " + tool + " segment of the detector series")
+        # Checked even when no row of this tool is listed: a named segment cannot be dropped.
+        if set(chosen[0]["reports"]) != used[tool]:
+            raise ValueError("Evidence must be exactly the reports of the named " + tool + " segment")
+    versions = {"av": [], "yara": []}
+    for relative, listed in by_evidence.items():
+        report = scan_bridge.load_report(workspace, relative)
+        if report["run_id"] != config["run_id"]:
+            raise ValueError("Evidence belongs to a different run: " + relative)
+        expected = scan_bridge.report_rows(report, relative, config["run_id"])
+        key = lambda r: (r["sample_id"], r["tool"])
+        if sorted(map(json.dumps, sorted(expected, key=key))) != sorted(map(json.dumps, sorted(listed, key=key))):
+            raise ValueError("Observation rows differ from their evidence report: " + relative)
+        tool, recorded = scan_bridge.tool_versions(report)
+        versions[tool].append(recorded)
+        if tool == "yara":
+            if report["ruleset_sha256"] != record["ruleset_sha256"]:
+                raise ValueError("YARA evidence used a rule set other than the frozen one: " + relative)
+            if report["yara_version"] != record["yara_version"]:
+                raise ValueError("YARA evidence used another YARA version than the freeze record: " + relative)
+            started = datetime.fromisoformat(report["started_at_utc"].replace("Z", "+00:00"))
+            if started < frozen_at:
+                raise ValueError("YARA check with the frozen rule set began before freezing: " + relative)
+        if tool == "av" and run_guard.needs_final_rules(samples[report["sample_id"]]):
+            started = datetime.fromisoformat(report["started_at_utc"].replace("Z", "+00:00"))
+            if started < frozen_at:
+                raise ValueError("AV check of an evaluation variant or benign file began before the rule set "
+                                 "was final: " + report["sample_id"])
+    return {tool: values[0] if values else None for tool, values in versions.items()}
+
+
 def run(config_path, manifest_path, observations_path):
     config_path = external_path(config_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    if config.get("mode") != "control" or not config.get("run_id"):
-        raise ValueError("This initial implementation accepts explicitly labelled control runs only")
+    mode = config.get("mode")
+    if mode not in {"control", "research"} or not config.get("run_id"):
+        raise ValueError("Accounting accepts explicitly labelled control or research runs only")
+    if mode == "research" and not config.get("protocol_version"):
+        raise ValueError("Research mode needs a protocol version")
     for tool in ("av", "yara"):
-        if not config.get(tool, {}).get("state_id"):
+        if not isinstance(config.get(tool), dict):
+            raise ValueError("Missing tool configuration: " + tool)
+        # Research mode may leave a tool without a state when it produced nothing
+        # in the run (e.g. no YARA for an EMPTY or FAILED rule set); that is checked
+        # against the detector series.
+        if not config[tool].get("state_id") and mode != "research":
             raise ValueError("Missing tool state ID: " + tool)
     ruleset_status = config["yara"].get("ruleset_status")
     if ruleset_status not in RULESET_STATUSES:
@@ -547,16 +629,22 @@ def run(config_path, manifest_path, observations_path):
     collection = config.get("collection_root")
     collection = external_path(config_path.parent / collection) if collection else None
     samples = validate_samples(read_csv(external_path(manifest_path), SAMPLE_FIELDS), workspace, collection)
+    rows = read_csv(external_path(observations_path), OBSERVATION_FIELDS)
     detected_by = {}
-    observations = validate_observations(read_csv(external_path(observations_path), OBSERVATION_FIELDS),
-                                         samples, config, workspace, detected_by)
-    return {"run_id": config["run_id"], "mode": "control", "experiment_results": False,
-            "notice": "Accounting check only. Supplied detector responses are simulated; no AV or YARA ran.",
-            "code_sha256": digest(Path(__file__)),
+    observations = validate_observations(rows, samples, config, workspace, detected_by)
+    if mode == "research":
+        tool_states = research_evidence(config, samples, rows, workspace)
+        notice = ("Research accounting from validated detector reports. Review the evidence and the "
+                  "segments before reporting results.")
+    else:
+        tool_states = {tool: config[tool] for tool in ("av", "yara")}
+        notice = "Accounting check only. Supplied detector responses are simulated; no AV or YARA ran."
+    return {"run_id": config["run_id"], "mode": mode, "experiment_results": mode == "research",
+            "notice": notice, "code_sha256": digest(Path(__file__)),
             "protocol_version": config.get("protocol_version"),
             "config_sha256": digest(config_path), "manifest_sha256": digest(Path(manifest_path)),
             "observations_sha256": digest(Path(observations_path)),
-            "tool_states": {tool: config[tool] for tool in ("av", "yara")},
+            "tool_states": tool_states,
             **summarize(samples, observations, ruleset_status, detected_by)}
 
 

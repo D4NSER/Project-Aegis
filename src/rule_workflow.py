@@ -439,7 +439,7 @@ def accept_rule(text, package, samples, av, results, workspace, collection=None)
 
 # R3 · Freezing ------------------------------------------------------------------------
 
-def freeze(rules, decisions, samples, av, yara_version):
+def freeze(rules, decisions, samples, av, yara_version, *, run_id):
     """Combine accepted rules into one frozen set.
 
     `rules`: {rule_id: final rule text}; `decisions`: {rule_id: accept_rule result}.
@@ -478,7 +478,9 @@ def freeze(rules, decisions, samples, av, yara_version):
         status, reason = "EMPTY", "NO_RULE_ACCEPTED"
     else:
         status, reason = "FROZEN", None
-    return text, {"schema": 1, "kind": "ruleset_freeze", "status": status, "reason": reason,
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("A freeze record belongs to one run")
+    return text, {"schema": 1, "kind": "ruleset_freeze", "run_id": run_id, "status": status, "reason": reason,
                   "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "yara_version": yara_version,
                   "ruleset_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest() if status == "FROZEN" else None,
                   "targets": targets, "unknown_av_targets": unknown, "undecided_targets": undecided,

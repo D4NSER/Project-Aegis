@@ -78,8 +78,9 @@ close provenance requires human review. Paths are relative to the configured
 external workspace, or `collection:<relative>` inside an optional read-only
 `collection_root`. Changed files, cross-split projects/parents, duplicate
 observations and mixed run/tool-state IDs are rejected. A tool-state ID must
-refer to one fixed configuration. This accounting demonstration supports only
-`mode: control`; separate inert VM/scanner reports do not become research runs.
+refer to one fixed configuration. The demonstration uses `mode: control`;
+inert VM/scanner control reports do not become research runs, and research
+mode refuses the demonstration's synthetic functionality records.
 
 Lineage rules:
 
@@ -242,6 +243,52 @@ hashes; a series whose state changes is refused. Observations now carry
 `detected_by`, required for AV detections and forbidden otherwise.
 Deploying these checks into the VM, one AV file per restore cycle, is a
 separate laboratory step.
+
+## Research-mode accounting, the execution guard and segments
+
+`mode: research` (see `config/research.example.json`) accepts only evidence
+from detector reports. On top of the control checks it requires:
+
+- a protocol version and `yara.freeze_record` of this run; the record's
+  status and rule-set hash must equal `yara.ruleset_status` and
+  `yara.ruleset_sha256`, and a FROZEN record's `frozen.yar` must still match
+  its hash;
+- `series`: the run's complete, ordered list of detector reports kept by the
+  laboratory (`kind: detector_series`), and `av.segment_id` /
+  `yara.segment_id` naming one segment of it per tool; the evidence must be
+  exactly that segment's reports, so A → B → A cannot be joined and a named
+  segment cannot be dropped by listing no rows for its tool;
+- no synthetic functionality record;
+- every observation's evidence to be a validated AV or YARA report, and the
+  rows of each report to be exactly the rows `scan_bridge` derives from it;
+- YARA evidence produced with the frozen rule set and the YARA version named
+  in the freeze record;
+- AV checks of evaluation variants and benign files, and every YARA check
+  with the frozen rule set, to have started after the freeze time
+  (originals' baseline and calibration AV checks may precede it).
+
+Supplementation with zero paired records is `NOT_EVALUATED` /
+`NO_PAIRED_RECORDS` in every mode.
+
+A tool with no reports, rows or named segment in the run (YARA for an EMPTY
+or FAILED rule set) may have `state_id: null` in research mode; control mode
+needs both state IDs. The report then names `mode: research`,
+`experiment_results: true` and the tool versions recorded in the evidence.
+
+Freeze records name their run. `src/run_guard.py` stores them without
+overwriting, refuses a record of another run, and builds guest requests only
+in an allowed order: a one-file AV request for an evaluation
+variant or benign file needs a final freeze record (FROZEN, EMPTY or FAILED)
+and carries its hash; a YARA request needs a FROZEN record. The accounting
+order check compares guest and host clock times, so it complements this
+guard rather than replacing it.
+
+`scan_bridge.py --segments` lists, per tool, consecutive reports of one run
+that share one tool state in finish-time order, each with a segment ID over
+the run, the state and the ordered report hashes; reports of another run are
+refused. A configuration change starts a new
+segment; each segment is accounted as its own run. How many records make a
+segment comparable is a protocol decision recorded outside this code.
 
 ## Native WebKit desktop
 

@@ -15,7 +15,10 @@ recorded calibration results, and freezes the accepted rule set by hash; it
 runs neither a model nor YARA. `src/guest_research_scan.py` decides AV (state A,
 real-time then custom scan, with `detected_by`) and frozen-rule YARA (state F)
 outcomes for selected files without executing them, and `src/scan_bridge.py`
-turns those reports into accounting observations.
+turns those reports into accounting observations. Research-mode accounting
+accepts only rows that match validated reports, a verified freeze record and
+the protocol's order; `src/run_guard.py` refuses guest requests that would
+break that order.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 

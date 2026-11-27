@@ -296,8 +296,10 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_freeze_combines_accepted_rules_and_detects_changes(self):
         rules, decisions = self.decided()
-        text, record = rw.freeze(rules, decisions, self.samples, self.av, "4.6.0")
-        self.assertEqual(("FROZEN", None), (record["status"], record["reason"]))
+        text, record = rw.freeze(rules, decisions, self.samples, self.av, "4.6.0", run_id="run-1")
+        self.assertEqual(("FROZEN", None, "run-1"), (record["status"], record["reason"], record["run_id"]))
+        with self.assertRaisesRegex(ValueError, "belongs to one run"):
+            rw.freeze(rules, decisions, self.samples, self.av, "4.6.0", run_id="")
         self.assertIn("rule Aegis_C1 ", text)
         self.assertNotIn("Aegis_C3", text)
         self.assertEqual({"ACCEPTED", "REJECTED_FEATURE_NOT_IN_DESCRIPTION"}, {r["status"] for r in record["rules"]})
@@ -311,26 +313,26 @@ class AcceptanceTests(unittest.TestCase):
     def test_empty_and_failed_rule_sets(self):
         rules, decisions = self.decided()
         detected = {key: True for key in self.av}
-        _, record = rw.freeze({}, {}, self.samples, detected, "4.6.0")
+        _, record = rw.freeze({}, {}, self.samples, detected, "4.6.0", run_id="run-1")
         self.assertEqual(("EMPTY", "AV_DETECTED_ALL_CALIBRATION_FILES"), (record["status"], record["reason"]))
         only_c3 = dict(detected, C3=False)
-        _, record = rw.freeze({"r-C3": rules["r-C3"]}, {"r-C3": decisions["r-C3"]}, self.samples, only_c3, "4.6.0")
+        _, record = rw.freeze({"r-C3": rules["r-C3"]}, {"r-C3": decisions["r-C3"]}, self.samples, only_c3, "4.6.0", run_id="run-1")
         self.assertEqual(("EMPTY", "NO_RULE_ACCEPTED"), (record["status"], record["reason"]))
-        _, record = rw.freeze({"r-C1": rules["r-C1"]}, {"r-C1": decisions["r-C1"]}, self.samples, self.av, "4.6.0")
+        _, record = rw.freeze({"r-C1": rules["r-C1"]}, {"r-C1": decisions["r-C1"]}, self.samples, self.av, "4.6.0", run_id="run-1")
         self.assertEqual(("FAILED", ["C1-v1", "C3"]), (record["status"], record["undecided_targets"]))
         self.assertIsNone(record["ruleset_sha256"])
         traced = rule(['$a = "AegisMarker"'], name="Aegis_C3")
         incomplete = dict(decisions, **{"r-C3": self.accept("C3", {"C3": "MATCHED"}, text=traced)})
-        _, record = rw.freeze(dict(rules, **{"r-C3": traced}), incomplete, self.samples, self.av, "4.6.0")
+        _, record = rw.freeze(dict(rules, **{"r-C3": traced}), incomplete, self.samples, self.av, "4.6.0", run_id="run-1")
         self.assertEqual(("FAILED", ["r-C3"]), (record["status"], record["incomplete_rules"]))
 
     def test_missing_av_responses_are_not_an_empty_rule_set(self):
         # Regression: no AV responses at all gave EMPTY / AV_DETECTED_ALL_CALIBRATION_FILES.
-        _, record = rw.freeze({}, {}, self.samples, {}, "4.6.0")
+        _, record = rw.freeze({}, {}, self.samples, {}, "4.6.0", run_id="run-1")
         self.assertEqual(("FAILED", "AV_RESPONSES_INCOMPLETE"), (record["status"], record["reason"]))
         self.assertEqual(["C1", "C1-v1", "C3"], record["unknown_av_targets"])
         partial = {key: True for key in self.av if key != "C3"}
-        _, record = rw.freeze({}, {}, self.samples, partial, "4.6.0")
+        _, record = rw.freeze({}, {}, self.samples, partial, "4.6.0", run_id="run-1")
         self.assertEqual(("FAILED", ["C3"]), (record["status"], record["unknown_av_targets"]))
 
     def test_invalid_av_values_never_settle_targets(self):
@@ -339,7 +341,7 @@ class AcceptanceTests(unittest.TestCase):
             av = {key: True for key in self.av}
             av["C3"] = value
             with self.subTest(value=value):
-                _, record = rw.freeze({}, {}, self.samples, av, "4.6.0")
+                _, record = rw.freeze({}, {}, self.samples, av, "4.6.0", run_id="run-1")
                 self.assertEqual(("FAILED", "AV_RESPONSES_INCOMPLETE", ["C3"]),
                                  (record["status"], record["reason"], record["unknown_av_targets"]))
                 self.assertNotIn("C3", rw.rule_targets(self.samples, av))
@@ -352,21 +354,21 @@ class AcceptanceTests(unittest.TestCase):
         for change in ({"accepted": True}, {"status": "ACCEPTED", "accepted": False},
                        {"status": "MADE_UP"}, {"accepted": 1}):
             with self.subTest(change=change), self.assertRaisesRegex(ValueError, "disagree"):
-                rw.freeze(rules, dict(decisions, **{"r-C1": dict(rejected, **change)}), self.samples, self.av, "4.6.0")
+                rw.freeze(rules, dict(decisions, **{"r-C1": dict(rejected, **change)}), self.samples, self.av, "4.6.0", run_id="run-1")
 
     def test_freeze_input_integrity(self):
         rules, decisions = self.decided()
         with self.assertRaisesRegex(ValueError, "exactly one decision"):
-            rw.freeze(rules, {k: v for k, v in decisions.items() if k != "r-C3"}, self.samples, self.av, "4.6.0")
+            rw.freeze(rules, {k: v for k, v in decisions.items() if k != "r-C3"}, self.samples, self.av, "4.6.0", run_id="run-1")
         with self.assertRaisesRegex(ValueError, "does not belong"):
-            rw.freeze(dict(rules, **{"r-C1": rules["r-C1"] + "// changed\n"}), decisions, self.samples, self.av, "4.6.0")
+            rw.freeze(dict(rules, **{"r-C1": rules["r-C1"] + "// changed\n"}), decisions, self.samples, self.av, "4.6.0", run_id="run-1")
         twice = dict(decisions, extra=decisions["r-C1"])
         with self.assertRaisesRegex(ValueError, "at most one final"):
-            rw.freeze(dict(rules, extra=rules["r-C1"]), twice, self.samples, self.av, "4.6.0")
+            rw.freeze(dict(rules, extra=rules["r-C1"]), twice, self.samples, self.av, "4.6.0", run_id="run-1")
         same_name = dict(rules, **{"r-C1-v1": rules["r-C1-v1"].replace("Aegis_C1_v1", "Aegis_C1")})
         renamed = dict(decisions, **{"r-C1-v1": self.accept("C1-v1", self.GOOD, text=same_name["r-C1-v1"])})
         with self.assertRaisesRegex(ValueError, "distinct rule names"):
-            rw.freeze(same_name, renamed, self.samples, self.av, "4.6.0")
+            rw.freeze(same_name, renamed, self.samples, self.av, "4.6.0", run_id="run-1")
 
     def test_cli_describe_writes_new_files_only(self):
         source = Path(self.temp.name) / "stub.bin"

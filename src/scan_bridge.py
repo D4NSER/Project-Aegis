@@ -109,44 +109,110 @@ def validate_yara(report):
     return report
 
 
+def load_report(workspace, relative):
+    path = aegis.local_file(workspace, relative)
+    if path.stat().st_size > 1024 * 1024:
+        raise ValueError("Report exceeds limit: " + relative)
+    report = json.loads(path.read_text(encoding="utf-8"))
+    kind = report.get("kind") if isinstance(report, dict) else None
+    if kind == "av_check":
+        return validate_av(report)
+    if kind == "yara_check":
+        return validate_yara(report)
+    raise ValueError("Unknown report kind: " + relative)
+
+
+def tool_versions(report):
+    """The recorded versions that define a tool state."""
+    if report["kind"] == "av_check":
+        before = report["defender_before"] or {}
+        return "av", {key: before.get(key) for key in ("AMProductVersion", "AMEngineVersion", "AntivirusSignatureVersion")}
+    return "yara", {"version": report["yara_version"], "executable": report["yara_sha256"],
+                    "ruleset": report["ruleset_sha256"]}
+
+
+def report_rows(report, relative, run_id):
+    """The observation rows one validated report stands for."""
+    if report["kind"] == "av_check":
+        return [dict(zip(aegis.OBSERVATION_FIELDS, [
+            run_id, report["sample_id"], report["sha256"], "av", report["status"], av_state_id(report),
+            report["scan_id"], report["finished_at_utc"], relative, report["detected_by"]]))]
+    return [dict(zip(aegis.OBSERVATION_FIELDS, [
+        run_id, item["sample_id"], item["sha256"], "yara", YARA_STATUS[item["status"]], yara_state_id(report),
+        report["scan_id"], report["finished_at_utc"], relative, ""])) for item in report["files"]]
+
+
 def observations(report_paths, samples, run_id, workspace):
     """Observation rows for aegis.py and the tool-state IDs its configuration must name."""
     workspace = aegis.external_path(workspace)
     rows, seen, states = [], set(), {"av": set(), "yara": set()}
-
-    def add(sample_id, sha, tool, status, state, scan_id, observed_at, evidence, detected_by=""):
-        sample = samples.get(sample_id)
-        if sample is None or sample["sha256"] != sha:
-            raise ValueError("Report names an unknown file or a stale hash: " + str(sample_id))
-        if (sample_id, tool) in seen:
-            raise ValueError("More than one " + tool + " report for one file: " + sample_id)
-        seen.add((sample_id, tool))
-        states[tool].add(state)
-        rows.append(dict(zip(aegis.OBSERVATION_FIELDS, [run_id, sample_id, sha, tool, status, state, scan_id,
-                                                        observed_at, evidence, detected_by])))
-
     for relative in report_paths:
-        path = aegis.local_file(workspace, relative)
-        if path.stat().st_size > 1024 * 1024:
-            raise ValueError("Report exceeds limit: " + relative)
-        report = json.loads(path.read_text(encoding="utf-8"))
+        report = load_report(workspace, relative)
         if report.get("run_id") != run_id:
             raise ValueError("Report belongs to a different run: " + relative)
-        if report.get("kind") == "av_check":
-            validate_av(report)
-            add(report["sample_id"], report["sha256"], "av", report["status"], av_state_id(report),
-                report["scan_id"], report["finished_at_utc"], relative, report["detected_by"])
-        elif report.get("kind") == "yara_check":
-            validate_yara(report)
-            for item in report["files"]:
-                add(item["sample_id"], item["sha256"], "yara", YARA_STATUS[item["status"]], yara_state_id(report),
-                    report["scan_id"], report["finished_at_utc"], relative)
-        else:
-            raise ValueError("Unknown report kind: " + relative)
+        for row in report_rows(report, relative, run_id):
+            sample = samples.get(row["sample_id"])
+            if sample is None or sample["sha256"] != row["sha256"]:
+                raise ValueError("Report names an unknown file or a stale hash: " + str(row["sample_id"]))
+            key = (row["sample_id"], row["tool"])
+            if key in seen:
+                raise ValueError("More than one " + row["tool"] + " report for one file: " + row["sample_id"])
+            seen.add(key)
+            states[row["tool"]].add(row["state_id"])
+            rows.append(row)
     for tool, values in states.items():
         if len(values) > 1:
             raise ValueError("The " + tool + " tool state changed within the series; split it into separate runs")
     return rows, {tool: next(iter(values)) if values else None for tool, values in states.items()}
+
+
+def segments(report_paths, workspace, run_id):
+    """Consecutive reports (by finish time) of one run that share one tool state, per tool.
+
+    A configuration change starts a new segment, so A -> B -> A gives three
+    segments. Each segment has an ID over its state and its ordered report
+    hashes; accounting names one segment per tool and must use all of it.
+    """
+    workspace = aegis.external_path(workspace)
+    loaded = []
+    for relative in report_paths:
+        report = load_report(workspace, relative)
+        if report["run_id"] != run_id:
+            raise ValueError("Report belongs to a different run: " + relative)
+        tool, versions = tool_versions(report)
+        state = av_state_id(report) if tool == "av" else yara_state_id(report)
+        digest = aegis.digest(aegis.local_file(workspace, relative))
+        loaded.append((datetime.fromisoformat(report["finished_at_utc"].replace("Z", "+00:00")),
+                       relative, tool, state, versions, digest))
+    if len({item[1] for item in loaded}) != len(loaded):
+        raise ValueError("A report is listed twice in the series")
+    result = {"run_id": run_id, "av": [], "yara": []}
+    for moment, relative, tool, state, versions, digest in sorted(loaded):
+        current = result[tool][-1] if result[tool] else None
+        if current is None or current["state_id"] != state:
+            current = {"state_id": state, "versions": versions, "first_at_utc": moment.isoformat(),
+                       "reports": [], "report_sha256": []}
+            result[tool].append(current)
+        current["reports"].append(relative)
+        current["report_sha256"].append(digest)
+        current["last_at_utc"] = moment.isoformat()
+    for tool in ("av", "yara"):
+        for index, segment in enumerate(result[tool], start=1):
+            segment["report_count"] = len(segment["reports"])
+            segment["segment_id"] = "%s-%d-%s" % (tool, index, hashlib.sha256(json.dumps(
+                [run_id, segment["state_id"], segment["report_sha256"]]).encode()).hexdigest()[:16])
+    return result
+
+
+def load_series(workspace, relative):
+    """The run's complete, ordered list of detector reports, kept by the laboratory."""
+    workspace = aegis.external_path(workspace)
+    value = json.loads(aegis.local_file(workspace, relative).read_text(encoding="utf-8"))
+    if (not isinstance(value, dict) or set(value) != {"schema", "kind", "run_id", "reports"}
+            or value["kind"] != "detector_series" or not isinstance(value["reports"], list)
+            or not all(isinstance(r, str) for r in value["reports"])):
+        raise ValueError("Invalid detector series record: " + relative)
+    return value
 
 
 def main(argv=None):
@@ -156,10 +222,16 @@ def main(argv=None):
     parser.add_argument("--collection")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--reports", nargs="+", required=True, help="workspace-relative report paths")
-    parser.add_argument("--output", required=True, help="new observations CSV outside the repository")
+    parser.add_argument("--output", help="new observations CSV outside the repository")
+    parser.add_argument("--segments", action="store_true", help="list configuration segments instead")
     args = parser.parse_args(argv)
     try:
         workspace = aegis.external_path(args.workspace)
+        if args.segments:
+            print(json.dumps(segments(args.reports, workspace, args.run_id), indent=2))
+            return 0
+        if not args.output:
+            raise ValueError("--output is required unless --segments is given")
         collection = aegis.external_path(args.collection) if args.collection else None
         samples = aegis.validate_samples(aegis.read_csv(aegis.external_path(args.manifest), aegis.SAMPLE_FIELDS),
                                          workspace, collection)

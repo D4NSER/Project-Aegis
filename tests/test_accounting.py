@@ -331,14 +331,16 @@ class AccountingTests(unittest.TestCase):
         report = aegis.summarize(self.samples, observations)
         supplement = report["supplementation"]
         self.assertEqual(0, supplement["paired_records"])
+        # Regression: zero pairs was reported as EVALUATED.
+        self.assertEqual(("NOT_EVALUATED", "NO_PAIRED_RECORDS"), (supplement["status"], supplement["reason"]))
         self.assertEqual(["control-02", "control-03", "control-04", "control-06"], supplement["incomplete_ids"])
         # Status counts cover both splits; the comparison itself uses evaluation only.
         self.assertEqual(6, report["status_counts"]["yara:NOT_RUN"])
         comparison = {row["sample_id"]: row["comparison"] for row in report["rows"]}
         self.assertEqual("YARA_INCOMPLETE", comparison["control-02"])
         self.assertEqual("CALIBRATION_SPLIT", comparison["control-01"])
-        bounds = supplement["bounds"]["combined"]
-        self.assertEqual((3, 3), self.frac(bounds["missing_as_not_detected"]["fpr"]))
+        self.assertNotIn("supplementation.csv", aegis.tables(report))
+        self.assertEqual("NO_PAIRED_RECORDS", aegis.summarize(self.samples, {})["supplementation"]["reason"])
 
     def test_supplementation_metrics_by_hand(self):
         ws, observations = scenario(self.base / "scenario")
@@ -501,7 +503,9 @@ class AccountingTests(unittest.TestCase):
         self.assertIn("Derinys & 2/3 (66,7\\,\\%)", output["supplementation.tex"])
         self.assertIn("malicious 3, benign 3", output["supplementation.tex"])
         self.assertIn("E1-v3,variant,evaluation,False,FAIL", output["rows.csv"])
-        undefined = aegis.tables(aegis.summarize(self.samples, {}))
+        # Benign pairs only: recall has an empty denominator and is printed as undefined.
+        benign_only = {(key, tool): "NOT_DETECTED" for key in ("control-02", "control-03") for tool in ("av", "yara")}
+        undefined = aegis.tables(aegis.summarize(self.samples, benign_only))
         self.assertIn("0/0 (neapibrėžta)", undefined["supplementation.tex"])
 
     def test_public_repository_and_existing_directory_are_protected(self):
@@ -512,10 +516,14 @@ class AccountingTests(unittest.TestCase):
             create_demo(self.workspace)
         self.assertEqual(before, (self.workspace / "manifest.csv").read_bytes())
 
-    def test_research_mode_cannot_be_misrepresented_as_supported(self):
-        self.config["mode"] = "research"
+    def test_research_mode_refuses_simulated_inputs(self):
+        self.config.update(mode="research")
         (self.workspace / "run.json").write_text(json.dumps(self.config))
-        with self.assertRaisesRegex(ValueError, "control runs only"):
+        with self.assertRaisesRegex(ValueError, "synthetic functionality"):
+            aegis.run(self.workspace / "run.json", self.workspace / "manifest.csv", self.workspace / "observations.csv")
+        self.config.update(mode="experiment")
+        (self.workspace / "run.json").write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ValueError, "control or research runs only"):
             aegis.run(self.workspace / "run.json", self.workspace / "manifest.csv", self.workspace / "observations.csv")
 
     def test_rule_set_status_is_required(self):
