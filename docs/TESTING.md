@@ -143,6 +143,54 @@ modifications or rules, freeze research data, verify functional behaviour, run
 Defender/YARA, or establish laboratory readiness. Simulation checks are separate
 from the planned research sample and cannot complete the research protocol.
 
+## Rule preparation without a model
+
+`src/rule_workflow.py` prepares and judges rule candidates without running a
+model, a sample or YARA. It reads file bytes on the host and decides from
+YARA compile/match outcomes that the laboratory records.
+
+- `describe` writes the model-facing description of one PE file: format,
+  machine, size and printable ASCII/UTF-16LE strings in file order, with a
+  minimum length (5), duplicates removed, a character budget (12 000) keeping
+  the first strings, and counts of found, removed, provided and omitted
+  strings. The parameters and their hash are part of the description; no
+  file name or path is included.
+- A candidate must be one plain rule. Its text strings (with `ascii`, `wide`,
+  `nocase`, `fullword` only) must occur in the description in **every**
+  encoding YARA will search (`ascii wide` needs both); hex strings, regular expressions and other modifiers cannot be
+  traced and are rejected as `REJECTED_FEATURE_NOT_IN_DESCRIPTION`. Imports,
+  includes, private/global rules, external variables such as `filename`,
+  module fields, byte-offset functions, undefined string references and
+  non-ASCII identifiers are `REJECTED_FORBIDDEN`. Only `filesize` and string references are allowed in
+  conditions.
+- `rule_package` computes the description from the target's registered bytes;
+  acceptance recomputes it and refuses an edited package. The YARA results
+  record must name the SHA-256 of the exact rule text, and every match
+  response must name the SHA-256 of the file it checked. Acceptance and
+  repair feedback share one record check: exactly the fields `rule_sha256`,
+  `compiled`, `compile_errors` and `matches`; `compiled` is true, false or an
+  explicit null (not recorded), `compile_errors` a list of strings, and each status
+  `MATCHED`, `NOT_MATCHED` or `ERROR`; any other record is refused as an
+  input error.
+- Acceptance then needs: compiled; a match on its own file; a match on at
+  least one other eligible original or non-held-out variant of the same group
+  (`NOT_APPLICABLE` when the group has none; control copies never count); no
+  match on any calibration benign file. A missing or `ERROR` response makes
+  the decision `INCOMPLETE`.
+- Rule targets are eligible, non-held-out calibration originals and variants
+  that the AV did not detect. Packages, acceptance and repair feedback refuse
+  any evaluation file or response and any held-out variant's response.
+- `freeze` combines the accepted final rules into one rule set and records its
+  SHA-256, YARA version and every decision. Targets are derived from the
+  calibration AV responses, where only `true` and `false` are valid; a
+  decision whose `accepted` flag disagrees with its status is refused. The
+  status is `FROZEN`, `EMPTY` (every candidate
+  detected, or no accepted rule) or `FAILED` (a candidate without a valid AV
+  response, a target without a final decision, or an `INCOMPLETE` one). `verify_frozen` detects later edits.
+
+Tests use generated header-only PE stubs (a DOS/PE header and inert marker
+text, no sections or code) in temporary directories and recorded results.
+
 ## Native WebKit desktop
 
 `src/mac_app.m` loads exactly `src/desktop_ui/index.html` and its two reviewed

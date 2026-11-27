@@ -9,6 +9,10 @@ records, then computes the protocol's metrics from supplied detector statuses:
 paired AV/YARA/combined recall, FPR, precision and F1, missing-response bounds,
 and detection loss with per-row inclusion reasons. `src/dataset_plan.py` assigns
 splits without detector responses and converts catalogue selections to manifests.
+`src/rule_workflow.py` writes model-facing PE descriptions, checks that a YARA
+candidate only uses features from its description, decides acceptance from
+recorded calibration results, and freezes the accepted rule set by hash; it
+runs neither a model nor YARA.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 
