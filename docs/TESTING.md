@@ -244,6 +244,45 @@ hashes; a series whose state changes is refused. Observations now carry
 Deploying these checks into the VM, one AV file per restore cycle, is a
 separate laboratory step.
 
+## Functionality cards and their evaluator
+
+`src/functionality_card.py` keeps cards as data and judges recorded runs; it
+executes nothing. A card names the input argument templates, the time limit,
+the expected exit code, stdout, empty stderr and exact owned-file contents
+(with a `{token}` placeholder), and the Process Monitor operations that must
+be observed. Its SHA-256 over canonical JSON is the manifest's `card_sha256`;
+any change gives a new hash, so the same card judges an original and all its
+variants.
+
+Outcomes for one recorded run:
+
+- `NOT_RUN` when the program was not launched;
+- `INCONCLUSIVE` when the outcome cannot be established: the launch was not
+  confirmed, the process ID is unknown, monitoring was not captured or not
+  complete, a technical error was recorded, the recorded arguments differ
+  from the card's filled templates, the elapsed time or timeout flag is not
+  a finite recorded value, the exit code is not a recorded integer (it may be
+  absent only for a process killed at the time limit), stdout, stderr or the
+  owned-file hashes are not recorded, or the monitor holds no event of the
+  process;
+- `FAIL` when monitoring was complete and a condition is not met, including a
+  confirmed run past the card's time limit, a wrong exit code or output, a
+  missing or different owned file, or a required operation not observed for
+  this process at the expected path;
+- `PASS` otherwise.
+
+A run record must name the hash of the file it launched and, when a trace
+was captured, a valid hash of its Process Monitor CSV equal to the supplied
+export's hash; evidence of another file
+or trace is refused. The card's time limit must be a finite positive number.
+The functionality record (sample hash, card hash, status, `synthetic`) is the
+one `aegis.py` validates; reasons are kept in a separate details record.
+Process Monitor CSV exports are read in UTF-16 or UTF-8. `check_control_build`
+needs a recorded compiler identity (name, version, SHA-256) and refuses a
+control copy not built from the same source, compiler and settings,
+and reports whether the output is byte-identical. Earlier rehearsal records
+keep their recorded outcomes; this classification applies from here on.
+
 ## Research-mode accounting, the execution guard and segments
 
 `mode: research` (see `config/research.example.json`) accepts only evidence

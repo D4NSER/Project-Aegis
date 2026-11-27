@@ -18,7 +18,9 @@ outcomes for selected files without executing them, and `src/scan_bridge.py`
 turns those reports into accounting observations. Research-mode accounting
 accepts only rows that match validated reports, a verified freeze record and
 the protocol's order; `src/run_guard.py` refuses guest requests that would
-break that order.
+break that order. `src/functionality_card.py` fixes functionality cards by
+hash and turns a recorded run and its Process Monitor rows into the
+functionality record, without executing anything.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 
