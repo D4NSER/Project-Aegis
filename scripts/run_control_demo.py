@@ -26,21 +26,38 @@ def create_demo(output):
     (output / "evidence/simulation.txt").write_text(note, encoding="utf-8")
     config = json.loads((aegis.ROOT / "config/control.example.json").read_text(encoding="utf-8"))
     (output / "run.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    card = "Synthetic functionality card for the accounting demonstration; nothing is executed.\n"
+    (output / "evidence/demo-card.txt").write_text(card, encoding="utf-8")
+    card_sha = aegis.digest(output / "evidence/demo-card.txt")
     samples, observations = [], []
     timestamp = datetime.now(timezone.utc).isoformat()
-    for index, (split, av, yara) in enumerate([
-        ("calibration", "NOT_DETECTED", "NOT_DETECTED"),
-        ("evaluation", "NOT_DETECTED", "NOT_DETECTED"),
-        ("evaluation", "NOT_DETECTED", "DETECTED"),
-        ("evaluation", "NOT_DETECTED", "NOT_RUN"),
+    # Rows 5-6 carry a synthetic "original" label so that the supplementation
+    # scenario has one independent group per split; they are inert text too.
+    for index, (split, kind, av, yara) in enumerate([
+        ("calibration", "benign", "NOT_DETECTED", "NOT_DETECTED"),
+        ("evaluation", "benign", "NOT_DETECTED", "NOT_DETECTED"),
+        ("evaluation", "benign", "NOT_DETECTED", "DETECTED"),
+        ("evaluation", "benign", "NOT_DETECTED", "NOT_RUN"),
+        ("calibration", "original", "DETECTED", "NOT_RUN"),
+        ("evaluation", "original", "NOT_DETECTED", "DETECTED"),
     ], start=1):
         name = "control-{:02d}".format(index)
         relative = "controls/" + name + ".txt"
         (output / relative).write_text("Inert Project Aegis accounting control " + name + "\n", encoding="utf-8")
         sha = aegis.digest(output / relative)
+        family, functionality, card_hash, evidence = "", "NOT_APPLICABLE", "", ""
+        label = "Known inert UTF-8 content"
+        if kind == "original":
+            family, functionality, card_hash = "synthetic-family", "PASS", card_sha
+            evidence = "evidence/functionality-" + name + ".json"
+            label = "SYNTHETIC label on inert UTF-8 content; accounting arithmetic only"
+            (output / evidence).write_text(json.dumps({
+                "schema": 1, "kind": "functionality_record", "record_id": "simulated-card-" + name,
+                "sample_sha256": sha, "card_sha256": card_sha, "status": "PASS", "synthetic": True}) + "\n",
+                encoding="utf-8")
         samples.append(dict(zip(aegis.SAMPLE_FIELDS, [
-            name, name, "", split, "benign", "", sha, relative, "NOT_APPLICABLE",
-            "locally generated inert text", "control-v1", "Known inert UTF-8 content", "text", "none",
+            name, name, family, split, kind, "", "", "", sha, relative, functionality, card_hash, evidence,
+            "locally generated inert text", "control-v1", label, "text", "none",
         ])))
         for tool, status in (("av", av), ("yara", yara)):
             observations.append(dict(zip(aegis.OBSERVATION_FIELDS, [
@@ -62,8 +79,8 @@ def main():
         report = create_demo(args.output)
     except (ValueError, OSError) as exc:
         parser.exit(1, str(exc) + "\n")
-    print("Control accounting passed: {} registered evaluation records, {} paired; simulated responses only."
-          .format(report["registered_evaluation_records"], report["paired_records"]))
+    print("Control accounting passed: {} eligible evaluation records, {} paired; simulated responses only."
+          .format(report["eligible_evaluation_records"], report["supplementation"]["paired_records"]))
 
 
 if __name__ == "__main__":

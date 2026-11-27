@@ -1,8 +1,10 @@
 # Testing
 
 Automated tests validate the publication boundary and control-stage accounting:
-file identity, lineage and split separation, missing responses, functionality
-exclusions, shared comparison denominators, and detection-loss arithmetic.
+file identity, lineage and split separation, control copies, holdout selection,
+functionality records, missing responses, shared comparison denominators,
+recall/FPR/precision/F1, missing-response bounds and detection-loss arithmetic,
+each checked against hand-counted synthetic cases.
 They use generated inert text and synthetic labels/responses, not malware.
 The complete suite imports Tkinter for the reused UI/worker classes; it does not
 create GUI windows. Use a Python installation with Tkinter support. GitHub CI
@@ -47,12 +49,17 @@ root, choose a **new directory outside this repository**:
 python3 scripts/run_control_demo.py --output ../aegis-control-demo
 ```
 
-This creates four inert UTF-8 text files, their SHA-256 manifest, a control-only
-configuration, simulated AV/YARA observation rows and a JSON accounting report.
-One control is for calibration; three are for evaluation. One evaluation row has
-a deliberately invented YARA positive and another an unknown response. These
-exercise false-positive accounting and incomplete comparisons. They are not
-observed detector behaviour. Every report has `experiment_results: false`.
+This creates six inert UTF-8 text files, their SHA-256 manifest, a control-only
+configuration, synthetic functionality records, simulated AV/YARA observation
+rows and a JSON accounting report. Four rows are benign controls (one for
+calibration, three for evaluation); two carry a synthetic `original` label, one
+per split, so that the supplementation scenario has an independent group in each
+split. One evaluation row has a deliberately invented YARA positive and another
+an unknown response. These exercise false-positive accounting, additional
+detections and incomplete comparisons. They are not observed detector behaviour.
+Every report has `experiment_results: false`. Demonstrations created before
+manifest schema 2 (2026-11-27) lack the new manifest columns and
+`yara.ruleset_status`; recreate them in a new directory.
 
 Recalculate an existing control without overwriting its report:
 
@@ -63,22 +70,73 @@ python3 src/aegis.py --config ../aegis-control-demo/run.json \
 ```
 
 The manifest records provenance, source version, label basis, format,
-architecture, project, family, parent, split and functionality status. Related
-files must share a project ID. Distinct originals from a known family may occupy
-different splits; identifying close provenance requires human review.
-All files and evidence paths are relative to the configured external workspace.
-Duplicate hashes, changed files, cross-split projects/parents, duplicate
+architecture, project, family, parent, split, generation order, holdout flag,
+functionality status, card hash and evaluator record. Kinds are `original`,
+`variant`, `control_copy` and `benign`. Related files must share a project ID.
+Distinct originals from a known family may occupy different splits; identifying
+close provenance requires human review. Paths are relative to the configured
+external workspace, or `collection:<relative>` inside an optional read-only
+`collection_root`. Changed files, cross-split projects/parents, duplicate
 observations and mixed run/tool-state IDs are rejected. A tool-state ID must
 refer to one fixed configuration. This accounting demonstration supports only
 `mode: control`; separate inert VM/scanner reports do not become research runs.
 
-`ERROR`, `INCONCLUSIVE`, `NOT_RUN`, and absent observations stay unknown.
-`true OR unknown` is true; `false OR unknown` is unknown. AV versus combined
-rates use the same subset where AV and the combined decision are known.
-Additional positives require a known AV negative and YARA positive. Originals
-and variants require `PASS`; a variant also requires its original to pass.
-Detection loss includes only known variant AV responses whose original was
-detected, independently of YARA completeness. Empty denominators yield `null`.
+Lineage rules:
+
+- A duplicate SHA-256 is accepted only for one `control_copy` and its own
+  original (a byte-identical recompilation). Each original has at most one
+  control copy; it carries no functionality outcome of its own.
+- Every variant has a positive `generation_order`, unique in its project group.
+- `holdout` must mark exactly the last eligible calibration variant of every
+  project group with at least two eligible variants, and nothing else.
+- `PASS`, `FAIL` and `INCONCLUSIVE` need a card hash and a workspace-relative
+  evaluator record whose sample hash, card hash and status match the row.
+  A variant uses its original's card. Catalogue eligibility is not functionality.
+
+Metrics, with each rate given as numerator and denominator:
+
+- `ERROR`, `INCONCLUSIVE`, `NOT_RUN` and absent observations stay unknown.
+- The supplementation scenario uses eligible evaluation files only. AV, YARA
+  and their OR are compared on files where **both** AV and YARA responses are
+  valid; others are listed in `incomplete_ids`. Each tool reports TP, FN, FP,
+  TN, recall, FPR, precision and F1, plus recall separately for originals and
+  variants. Additional detections and false positives need AV=0 and YARA=1.
+- Recall and FPR bounds use all eligible evaluation files, reading every
+  missing response first as not detected and then as detected. Precision and
+  F1 have no such bounds.
+- Detection loss covers both splits. A variant counts only if it and its
+  original passed functionality, the original was detected, its control copy
+  was detected (a byte-identical copy relies on the original's response, and
+  a valid contrary copy response is a conflict), and the variant's own AV
+  response is valid. Excluded variants are counted by reason.
+- The supplementation scenario is evaluated only when both splits contain at
+  least one original project group that passed functionality; otherwise it is
+  `NOT_EVALUATED` with `INDEPENDENT_GROUPS_MISSING`.
+- `yara.ruleset_status` is `FROZEN`, `EMPTY` (no YARA observations; Y=0 for all
+  files) or `FAILED` (supplementation and holdout results are not evaluated).
+- Holdout variants are reported separately for YARA and never enter
+  supplementation metrics. Every row's inclusion reason is listed under `rows`.
+
+Write CSV tables and a LaTeX fragment to a new external directory:
+
+```sh
+python3 src/aegis.py --config ../aegis-control-demo/run.json \
+  --manifest ../aegis-control-demo/manifest.csv \
+  --observations ../aegis-control-demo/observations.csv \
+  --output ../aegis-control-report.json --tables ../aegis-control-tables
+```
+
+`src/dataset_plan.py` assigns original project groups alternately (calibration
+first) by acceptance order. It allocates whole benign project groups to the
+planned calibration/evaluation quotas (10/50 by default): the allocation assigns
+as many files as the plan allows, then keeps the fill ratios most even, then
+follows acceptance order. Neither step reads detector responses.
+`build-manifest` requires both frozen records (`--assignment`). Each record
+must group objects by their catalogue project and must equal what its rule
+gives for its own acceptance order. The command rejects a catalogue whose
+selection differs from the records or contains unrecorded objects,
+converts selected originals and benign files, and appends only variant or
+control-copy rows of selected originals from a separate manifest-format CSV.
 
 The accounting tool reads files for hashing and never executes them. It does not generate
 modifications or rules, freeze research data, verify functional behaviour, run

@@ -3,8 +3,12 @@
 Research code for evaluating malware-detection robustness and the additional
 coverage of AI-assisted YARA rules.
 
-An initial control-stage accounting implementation validates file hashes,
-provenance groups and split boundaries, and summarizes supplied detector statuses.
+A control-stage accounting implementation validates file hashes, provenance
+groups, split boundaries, control copies, holdout variants and functionality
+records, then computes the protocol's metrics from supplied detector statuses:
+paired AV/YARA/combined recall, FPR, precision and F1, missing-response bounds,
+and detection loss with per-row inclusion reasons. `src/dataset_plan.py` assigns
+splits without detector responses and converts catalogue selections to manifests.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 
