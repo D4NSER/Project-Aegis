@@ -59,7 +59,7 @@ class ResearchFixture(unittest.TestCase):
         state = state or STATE_A
         return {"schema": 1, "kind": "av_check", "run_id": run_id, "scan_id": "av-" + sample_id,
                 "sample_id": sample_id, "sha256": self.samples[sample_id]["sha256"], "expected_state": "A",
-                "wait_seconds": 7, "started_at_utc": started, "finished_at_utc": started.replace(":00+", ":40+"),
+                "wait_seconds": 7, "access": {"at_utc": "2026-11-27T12:00:00+00:00", "error": None}, "started_at_utc": started, "finished_at_utc": started.replace(":00+", ":40+"),
                 "defender_before": state, "defender_after": state,
                 "realtime": lookup(detected_by == "REALTIME", "Real-Time Protection"),
                 "custom_scan": None if detected_by == "REALTIME" else {

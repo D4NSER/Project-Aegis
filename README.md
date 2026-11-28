@@ -21,6 +21,11 @@ the protocol's order; `src/run_guard.py` refuses guest requests that would
 break that order. `src/functionality_card.py` fixes functionality cards by
 hash and turns a recorded run and its Process Monitor rows into the
 functionality record, without executing anything.
+`src/vm_research_lab.py` runs the laboratory side of those checks in the
+Windows ARM VM, one cold cycle per check, with `src/guest_research_lab.py` in
+the guest: state A and F snapshots, EICAR calibration controls, AV, YARA and
+functionality runs under Process Monitor, each restored before the next.
+The desktop app's Laboratorija section runs these seven controls step by step.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 

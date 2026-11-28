@@ -93,6 +93,20 @@ class AVCheckTests(unittest.TestCase):
         return [{"id": event_id, "record_id": 9, "time": when, "path": "file:_" + str(path or self.target),
                  "source": source}]
 
+    def test_the_file_is_opened_once_before_the_wait(self):
+        system = FakeSystem([STATE_A])
+        opened = []
+        original = grs._read_once
+        grs._read_once = lambda path: opened.append((str(path), list(system.slept))) or "PermissionError"
+        try:
+            report = self.check(system)
+        finally:
+            grs._read_once = original
+        # Opened before the calibrated wait; a refused open is recorded, not treated as a result.
+        self.assertEqual(opened, [(str(self.target), [])])
+        self.assertEqual(report["access"]["error"], "PermissionError")
+        self.assertEqual(system.slept[0], 7)
+
     def test_state_must_be_A(self):
         report = self.check(FakeSystem([STATE_F]))
         self.assertEqual(("ERROR", ["STATE_MISMATCH"]), (report["status"], report["reasons"]))
@@ -111,6 +125,21 @@ class AVCheckTests(unittest.TestCase):
         self.assertEqual("REALTIME", report["detected_by"])
         self.assertEqual(["Real-Time Protection"], report["realtime"]["sources"])
         self.assertEqual("2026-11-27T12:00:00+00:00", events.since)
+
+    def test_a_late_realtime_record_never_becomes_a_negative(self):
+        """A record written after the first lookup but dated before the custom scan."""
+        class Clock(FakeSystem):
+            tick = 0
+            def now(self):
+                Clock.tick += 1
+                return "2026-11-27T12:00:%02d+00:00" % Clock.tick
+        system = Clock([STATE_A], events=[[], self.event(when="2026-11-27T12:00:01.5000000Z")])
+        report = self.check(system)
+        self.assertEqual((report["status"], report["reasons"][0]),
+                         ("INCONCLUSIVE", "DETECTION_RECORDED_AFTER_WAIT_BEFORE_SCAN"))
+        self.assertTrue(report["custom_scan"]["late_records"]["detected"])
+        self.assertFalse(report["custom_scan"]["lookup"]["detected"])
+        scan_bridge.validate_av({**report, "platform": "Windows", "architecture": "ARM64", "code_sha256": "c" * 64})
 
     def test_old_or_other_path_records_do_not_count(self):
         # Regression: yesterday's event for the same path was taken as REALTIME, and the
@@ -360,7 +389,7 @@ class BridgeTests(unittest.TestCase):
     def av_report(self, sample_id, status, detected_by="", **extra):
         report = {"schema": 1, "kind": "av_check", "run_id": "run-1", "scan_id": "av-" + sample_id,
                   "sample_id": sample_id, "sha256": self.samples[sample_id]["sha256"], "expected_state": "A",
-                  "wait_seconds": 7, "started_at_utc": "2026-11-27T12:00:00+00:00",
+                  "wait_seconds": 7, "access": {"at_utc": "2026-11-27T12:00:00+00:00", "error": None}, "started_at_utc": "2026-11-27T12:00:00+00:00",
                   "finished_at_utc": "2026-11-27T12:01:00+00:00", "defender_before": STATE_A,
                   "defender_after": STATE_A,
                   "realtime": self.lookup(detected_by == "REALTIME", "Real-Time Protection"),

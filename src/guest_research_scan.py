@@ -3,7 +3,8 @@
 Files are scanned, never executed. Each check returns one of the five
 outcomes and never turns an incomplete check into a negative:
 
-* AV (state A, real-time protection on): one file per run. After the fixed
+* AV (state A, real-time protection on): one file per run. The file is
+  opened once (real-time protection scans on access); after the fixed
   waiting period, Defender's threat history and detection events are read
   for the file's unique path; a hit is DETECTED by REALTIME. Otherwise a
   separate custom scan runs; a hit is DETECTED by CUSTOM_SCAN. NOT_DETECTED
@@ -68,6 +69,15 @@ def _same_bytes(path, expected):
         return sha256(path) == expected
     except OSError:
         return None
+
+
+def _read_once(path):
+    """Open and read a file once; the error name when access was refused (e.g. blocked by real-time protection)."""
+    try:
+        Path(path).read_bytes()
+        return None
+    except OSError as exc:
+        return type(exc).__name__
 
 
 def parse_time(value):
@@ -195,6 +205,22 @@ def _lookup(system, path, since):
         return {"known": False, "threats": [], "events": [], "detected": False, "error": type(exc).__name__}
 
 
+def _split(lookup, moment):
+    """(records dated before `moment`, records at or after it), each in lookup form."""
+    cut = parse_time(moment)
+    parts = []
+    for before in (True, False):
+        events = [e for e in lookup.get("events", []) if (parse_time(e.get("time")) < cut) is before]
+        threats = [t for t in lookup.get("threats", [])
+                   if (parse_time(t.get("InitialDetectionTime")) < cut) is before]
+        parts.append({"known": lookup["known"], "threats": threats, "events": events,
+                      "detected": bool(threats or events), **({"error": lookup["error"]} if "error" in lookup else {}),
+                      "sources": sorted({str(e.get("source")) for e in events if e.get("source")}
+                                        | {"type-" + str(t.get("DetectionSourceTypeID")) for t in threats
+                                           if t.get("DetectionSourceTypeID") is not None})})
+    return parts[0], parts[1]
+
+
 def av_check(system, target, expected_sha256, *, wait_seconds, scan_timeout=60, run_id, sample_id):
     target = Path(target)
     started = system.now()
@@ -202,7 +228,7 @@ def av_check(system, target, expected_sha256, *, wait_seconds, scan_timeout=60, 
     report = {"schema": 1, "kind": "av_check", "run_id": run_id, "scan_id": "av-" + uuid.uuid4().hex,
               "sample_id": sample_id, "sha256": expected_sha256, "expected_state": "A",
               "wait_seconds": wait_seconds, "started_at_utc": started, "defender_before": before,
-              "realtime": None, "custom_scan": None, "file_unchanged": None,
+              "access": None, "realtime": None, "custom_scan": None, "file_unchanged": None,
               "status": None, "detected_by": "", "reasons": []}
 
     def finish(status, *reasons, detected_by="", observed=None):
@@ -220,6 +246,10 @@ def av_check(system, target, expected_sha256, *, wait_seconds, scan_timeout=60, 
 
     if not state_matches(before, "A"):
         return finish("ERROR", "STATE_MISMATCH" if before else "STATE_READ_FAILED:" + str(state_error))
+    # Real-time protection here scans a file when it is opened, not when it is
+    # written (laboratory EICAR control, 2026-11-28): the check opens the file
+    # once, as a program using it would, and then waits the calibrated period.
+    report["access"] = {"at_utc": system.now(), "error": _read_once(target)}
     system.sleep(wait_seconds)
     report["realtime"] = realtime = _lookup(system, target, started)
     if realtime["detected"]:
@@ -242,8 +272,15 @@ def av_check(system, target, expected_sha256, *, wait_seconds, scan_timeout=60, 
         return finish("ERROR", "CUSTOM_SCAN_NOT_STARTED:" + type(exc).__name__)
     report["custom_scan"] = {"timed_out": False, "started_at_utc": scan_started, **scan,
                              "exit_code_use": "diagnostic only"}
-    custom = _lookup(system, target, scan_started)
+    # One lookup from the check's start, split at the scan's start, so that a
+    # real-time record written after the first lookup cannot fall between the
+    # two windows and leave a negative.
+    whole = _lookup(system, target, started)
+    late, custom = _split(whole, scan_started)
     report["custom_scan"]["lookup"] = custom
+    report["custom_scan"]["late_records"] = late
+    if late["detected"]:
+        return finish("INCONCLUSIVE", "DETECTION_RECORDED_AFTER_WAIT_BEFORE_SCAN")
     if custom["detected"]:
         if not realtime["known"]:
             # The earlier real-time lookup failed, so the flagging check cannot be named.

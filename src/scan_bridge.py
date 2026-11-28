@@ -18,7 +18,7 @@ import sys
 import aegis
 from guest_research_scan import YARA_VERSION, source_check, state_matches, versions_stable
 
-AV_FIELDS = {"schema", "kind", "run_id", "scan_id", "sample_id", "sha256", "expected_state", "wait_seconds",
+AV_FIELDS = {"schema", "kind", "run_id", "scan_id", "sample_id", "sha256", "expected_state", "wait_seconds", "access",
              "started_at_utc", "finished_at_utc", "defender_before", "defender_after", "realtime", "custom_scan",
              "file_unchanged", "status", "detected_by", "reasons", "platform", "architecture", "code_sha256"}
 YARA_FIELDS = {"schema", "kind", "run_id", "scan_id", "expected_state", "defender_state", "yara_version",

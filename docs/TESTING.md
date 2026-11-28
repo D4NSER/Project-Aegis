@@ -283,6 +283,82 @@ control copy not built from the same source, compiler and settings,
 and reports whether the output is byte-identical. Earlier rehearsal records
 keep their recorded outcomes; this classification applies from here on.
 
+## Laboratory cycles for the protocol checks (stage 3)
+
+`src/vm_research_lab.py` is a terminal command on the Mac. It asks for the VM
+encryption and lab-account credentials in hidden prompts, keeps them in memory
+only, and runs one check per cold cycle:
+
+1. revert the named snapshot (state A: real-time protection on; state F: off),
+   start it (the operator starts it in Fusion when VIX cannot) and log in;
+2. prove that every earlier reverted cycle's kit and desktop launcher are
+   absent, and record that proof beside the cycle;
+3. copy a small kit, the request and the selected files, run one action of
+   `src/guest_research_lab.py`, and keep its report on the host;
+4. shut the guest down and revert the snapshot, even after a failure.
+
+Checks that read Defender's history or start Process Monitor need ordinary
+administrator rights: the command opens the launcher in the lab desktop and the
+operator approves Windows UAC. No report within the waiting limit is a
+timeout, not a result; a guest failure record is shown and kept.
+
+Commands: `register-a --snapshot NAME` records an existing baseline as state A
+after a probe; `make-f` boots state A, shows the operator the manual steps
+(Tamper Protection off, real-time protection off by policy), probes until the
+guest is really in state F, removes the probe kit and creates an
+`Aegis-StateF-*` cold snapshot; `probe` records Windows build, VMware Tools
+version, Defender state and policy; `eicar-realtime` (A) measures how long
+Defender takes to record the official EICAR text for its exact path and keeps
+the recorded source names; `eicar-custom` (F) leaves the text on disk with
+real-time protection off, so a positive can only come from the custom scan;
+`av`, `yara` and `functionality` run the protocol checks and validate the
+reports with `scan_bridge` or apply the card evaluator. Functionality records
+from these cycles are marked synthetic: they are laboratory controls.
+
+The desktop app's **Laboratorija** section (`src/research_session.py`) runs
+the same seven controls with fixed inputs taken from saved records: the current
+cold baseline, the verified tool kit that belongs to it and the two managed
+rehearsal programs (their hashes are checked; the card and control rule are
+written once under `research-lab/inputs` and a changed copy is refused). Steps
+open in protocol order (AV control only after the EICAR calibration, which sets
+the waiting period to twice the measured time and at least 10 s). Operator
+requests appear in the page with "continue" and "cancel"; cancelling restores
+the VM. Each step's latest outcome is read back from the cycle records and
+compared with the outcome written down before the run. The section and the
+older control drawer never hold a VM connection at the same time.
+
+The first laboratory run (2026-11-28) showed that Defender's real-time
+protection in this guest records a file when it is opened, not when it is
+written: the written EICAR text stayed on disk until it was read back, then
+was blocked at once (`Real-Time Protection`, `DetectionSourceTypeID` 3). The
+real-time calibration therefore tries write, read and copy in turn and names
+the action that was followed by a record, and each AV check opens its file
+once before the calibrated wait. The custom-scan control in state F was
+recorded with source `User` (`DetectionSourceTypeID` 1) while MpCmdRun
+returned 0 despite the detection, which confirms that the exit code is kept
+for diagnostics only. The Process Monitor export was UTF-8 with columns
+`Time of Day, Process Name, PID, Operation, Path, Result, Detail`.
+
+A cycle counts only when it finished: its report passed the host's checks
+(protocol validation, file and scanner identity, the probe's state and a
+network inventory that was actually read and found empty) and its hash was
+recorded. A rejected report keeps an error record beside it, and the section
+shows that error, not the report. The restore status is shown separately:
+verified after a later boot found the kit gone, pending until then. A step
+cancelled or failed at any prompt shuts the guest down and reverts the
+snapshot; for state F this discards the operator's changes until the F
+snapshot exists. The AV check looks up Defender's records once over the whole
+check and splits them at the custom scan's start: a real-time record dated
+before the scan but written after the first lookup makes the outcome
+`INCONCLUSIVE` (`DETECTION_RECORDED_AFTER_WAIT_BEFORE_SCAN`), never a negative.
+Test fixtures use neutral synthetic guest paths.
+
+The EICAR text is created only inside the guest and never executed or copied
+to the host. `tests/test_research_lab.py` uses a fake VM with an in-memory
+guest disk and cold snapshots, so a revert really removes a kit and a
+surviving kit blocks the next cycle; Defender, Process Monitor and the guest
+programs are scripted.
+
 ## Research-mode accounting, the execution guard and segments
 
 `mode: research` (see `config/research.example.json`) accepts only evidence

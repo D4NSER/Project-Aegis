@@ -8,6 +8,7 @@ import threading
 import time
 
 import control_panel as service
+import research_session
 from control_workspace import CONTROLS, ControlWorkspace
 from vm_control_ui import VMControlWindow
 
@@ -90,7 +91,8 @@ class NativeSession(VMControlWindow):
 
 OPERATIONS={'refresh','demo','collection_load','catalog_check','plan','result','export',
     'open_results','open_result','mount','open_vm','settings','local_control','lab_connect',
-    'lab_action','lab_close','close'}
+    'lab_action','lab_close','close','research_connect','research_action','research_close','open_research'}
+RESEARCH_ACTIONS={'step','continue','cancel'}
 
 
 class DesktopBackend:
@@ -98,7 +100,12 @@ class DesktopBackend:
         self.workspace=ControlWorkspace(workspace)
         self.lab_status=Path(lab_status)
         self.settings=service.load_settings(self.workspace.root)
-        self.catalog=None;self.lab=None
+        self.catalog=None;self.lab=None;self.research=None
+
+    def research_view(self):
+        if self.research:return self.research.snapshot()
+        try:return research_session.overview(self.workspace.root)
+        except (OSError,ValueError,KeyError) as exc:return {'error':str(exc)}
 
     def config(self):
         record=service.read_json(self.lab_status)
@@ -127,11 +134,35 @@ class DesktopBackend:
         if op not in OPERATIONS or not isinstance(args,dict):raise ValueError('Neatpažintas programos veiksmas.')
         if self.lab and self.lab.busy and op not in {'refresh','result','open_results','open_vm'}:
             raise ValueError('Palauk vykdomo laboratorijos veiksmo pabaigos.')
+        if (self.research and self.research.busy
+                and op not in {'refresh','result','open_results','open_vm','research_action','open_research'}):
+            raise ValueError('Palauk, kol baigsis laboratorijos žingsnis.')
+        if op=='research_connect':
+            if self.lab:raise ValueError('Pirmiausia uždaryk kontrolių laboratorijos sesiją.')
+            if self.research:raise ValueError('Laboratorijos sesija jau atverta.')
+            self.research=research_session.ResearchSession(self.workspace.root,self.config())
+            try:self.research.submit('connect',(args.pop('vm_credential',''),args.pop('lab_credential','')))
+            except Exception:
+                self.research.disconnect();self.research=None;raise
+            return self.research.snapshot()
+        if op=='research_action':
+            if not self.research:raise ValueError('Pirmiausia prisijunk prie laboratorijos.')
+            action=args.get('action')
+            if action not in RESEARCH_ACTIONS:raise ValueError('Neatpažintas laboratorijos veiksmas.')
+            self.research.submit(action,args.get('step') if action=='step' else None)
+            return self.research.snapshot()
+        if op=='research_close':
+            if self.research:self.research.disconnect();self.research=None
+            return self.research_view()
+        if op=='open_research':
+            folder=self.workspace.root/'research-lab';folder.mkdir(exist_ok=True)
+            service.open_path(folder);return {}
         if op=='refresh':
             config=self.config()
             return {'vm':service.probe_vm(config),'budget':service.budget_snapshot(self.workspace.root,config),
                     'results':self.results(),'catalog':self.catalogue(),'settings':{k:config.get(k,'') for k in ('vm_bundle','disk_image')},
                     'workspace':str(self.workspace.root),'lab':self.lab.snapshot() if self.lab else None,
+                    'research':self.research_view(),
                     'controls':[{'id':key,'title':v[0]} for key,v in CONTROLS.items()]}
         if op in {'demo','collection_load'}:
             if self.lab:raise ValueError('Prieš keisdamas kolekciją uždaryk laboratorijos sesiją.')
@@ -176,6 +207,7 @@ class DesktopBackend:
             return {'report':report,'results':self.results()}
         if op=='lab_connect':
             if self.lab:raise ValueError('Sesija jau atverta. Pirmiausia ją uždaryk.')
+            if self.research:raise ValueError('Pirmiausia uždaryk tyrimo laboratorijos sesiją.')
             config=self.config()
             if self.catalog:config['collection_root']=self.catalog['root']
             self.lab=NativeSession(self.workspace.root,config)
@@ -190,6 +222,7 @@ class DesktopBackend:
             self.lab.submit(action,args.get('path') if action=='transfer' else None);return self.lab.snapshot()
         if op in {'lab_close','close'}:
             if self.lab:self.lab.disconnect();self.lab=None
+            if op=='close' and self.research:self.research.disconnect();self.research=None
             return {'closed':True}
 
 
@@ -206,7 +239,7 @@ def main():
     threading.Thread(target=receive,daemon=True).start()
     def emit(value):
         sys.stdout.write(json.dumps(value,ensure_ascii=False,default=str)+'\n');sys.stdout.flush()
-    previous=None
+    previous=research_previous=None;research_next=0
     while True:
         try:request=requests.get(timeout=.1)
         except queue.Empty:request=False
@@ -226,6 +259,12 @@ def main():
         else:snapshot=None
         if snapshot!=previous:
             emit({'event':'lab','data':snapshot});previous=snapshot
+        if backend.research and time.monotonic()>=research_next:
+            research_next=time.monotonic()+.5
+            try:view=backend.research.snapshot()
+            except (OSError,ValueError,KeyError) as exc:view={'error':str(exc)}
+            if view!=research_previous:
+                emit({'event':'research','data':view});research_previous=view
 
 
 if __name__=='__main__':main()

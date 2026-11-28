@@ -10,6 +10,12 @@ function rpc(op,args={}){return new Promise((resolve,reject)=>{const id=++sequen
 function pick(kind){return new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});window.webkit.messageHandlers.aegis.postMessage({id,native:'pick',kind});});}
 window.aegisReceive=value=>{
   if(value.event==='offline'){toast(value.data,true);$('#status').textContent=value.data;return;}
+  if(value.event==='research'){
+    const before=S.meta?.research?.busy;if(S.meta)S.meta.research=value.data;
+    if(S.page==='research'&&!document.activeElement?.matches('#research-form input'))render();
+    if(before&&!value.data?.busy)toast(value.data?.status||'Žingsnis baigtas.',!/sutampa su laukiamu\./.test(value.data?.status||''));
+    return;
+  }
   if(value.event==='lab'){
     const before=S.lab?.busy;S.lab=value.data;
     if(S.drawer)renderLab();
@@ -35,7 +41,7 @@ async function run(op,args={},success){
   finally{setBusy(false);}
 }
 async function refresh(redraw=true){
-  if(S.busy||S.lab?.busy)return;
+  if(S.busy||S.lab?.busy||S.meta?.research?.busy)return;
   return run('refresh',{},value=>{S.meta=value;S.results=value.results;S.catalog=value.catalog;S.lab=value.lab;
     $('#connection').className='connection '+(value.vm.state==='running'?'running':'');
     $('#connection').innerHTML='<i></i>'+esc(vmName());
@@ -48,7 +54,7 @@ function navigate(page){S.page=page;S.query='';render();}
 function render(){
   if(!S.meta)return;
   document.querySelectorAll('.nav').forEach(b=>{b.classList.toggle('active',b.dataset.page===S.page);b.setAttribute('aria-current',b.dataset.page===S.page?'page':'false');});
-  $('#main').innerHTML=({home:homePage,files:filesPage,results:resultsPage,guide:guidePage,settings:settingsPage}[S.page]||homePage)();
+  $('#main').innerHTML=({home:homePage,files:filesPage,results:resultsPage,research:researchPage,guide:guidePage,settings:settingsPage}[S.page]||homePage)();
   if(S.page==='files'&&S.catalog)updateSelection();
 }
 function header(title,description,actions=''){return `<div class="page-head"><div><h1>${title}</h1><p>${description}</p></div><div class="row">${actions}</div></div>`;}
@@ -84,6 +90,22 @@ function resultDetail(){
     ${report.checks?`<div><div class="eyebrow">KONTROLĖS KRITERIJAI</div>${Object.entries(report.checks).map(([key,passed])=>`<div class="file-proof">${esc(checks[key]||key)}<small>${passed===true?'Patvirtinta':'Reikia patikros'}</small></div>`).join('')}</div>`:''}
     <div class="detail-note">${report.mode==='selection_plan'?'Tai pasirinkimo planas. Failai į VM dar neperduoti.':report.mode==='selection_transfer_control'?'Patikrintas pasirinkto poaibio perdavimas. Failai nevykdyti.':'Tai kontrolinė patikra. Ji nėra tyrimo eksperimentas.'}</div>
     <div class="detail-actions">${button('Eksportuoti ataskaitą ↗','export',true,'data-mutates')}<details><summary>Techninis įrašas</summary><pre>${esc(JSON.stringify(report,null,2))}</pre><button class="quiet" data-action="open-result">Atverti pirminį JSON ↗</button></details></div>`;
+}
+function researchPage(){
+  const r=S.meta.research||{};
+  if(r.error)return `<section class="page">${header('Laboratorija','Tyrimo patikrų paruošimas Windows VM.')}<div class="panel"><div class="callout">Laboratorijos įrašų nepavyko perskaityti: ${esc(r.error)}</div></div></section>`;
+  const states=r.states||{},steps=r.steps||[];
+  const state=(key,label)=>`<div class="fact"><span>${label}</span>${states[key]?tag('Paruošta','good'):tag('Dar nėra','warn')}</div>`;
+  const done=steps.filter(s=>s.result?.ok).length;
+  const verdict=res=>!res?tag('Neatlikta'):res.ok?tag('Sutampa','good'):tag('Nesutampa','warn');
+  const row=(s,i)=>`<div class="research-step ${r.running===s.id?'running':''}"><div class="research-number">${i+1}</div><div class="grow"><div class="row research-title"><strong>${esc(s.title)}</strong>${tag('Būsena '+s.state,'purple')}${s.uac?tag('Reikės UAC'):''}${verdict(s.result)}</div><p>${esc(s.what)}</p><div class="research-expect"><span>Laukiama</span>${esc(s.expected)}</div>${s.result?`<div class="research-expect"><span>Gauta</span>${esc(s.result.summary)} <small class="muted">${esc(date(s.result.at))}</small></div><div class="research-expect"><span>VM</span>${esc(({VERIFIED:'Atkūrimas patvirtintas',PENDING:'Atkurta; patvirtinimas – kitą kartą paleidus',SNAPSHOT_CREATED:'Sukurta nauja švari kopija',NOT_REVERTED:'Atkūrimas neužfiksuotas – peržiūrėk'})[s.result.restore]||'—')}</div>`:''}</div><button class="${s.allowed&&!r.busy?'primary':'secondary'}" data-research-step="${esc(s.id)}" ${s.allowed&&!r.busy?'':'disabled'}>${s.result?'Kartoti':'Pradėti'}</button></div>`;
+  const login=r.connected?`<div class="lab-state ${r.busy?'running':''}">${esc(r.status)}</div>${r.waiting?`<div class="callout research-wait"><strong>Tavo veiksmas</strong><pre>${esc(r.waiting)}</pre><div class="row"><button class="primary" data-research-answer="continue">Atlikau – tęsti</button><button class="secondary" data-research-answer="cancel">Atšaukti žingsnį</button></div></div>`:''}<div class="row">${button('Atverti Windows ↗','open-vm')}<button class="quiet" data-action="research-close" ${r.busy?'disabled':''}>Uždaryti sesiją</button></div>`:
+    `<form id="research-form" class="stack"><p>Įvesk esamus VM slaptažodžius. Jie laikomi tik atvertos sesijos atmintyje.</p><label class="setting-field">Fusion VM slaptažodis<input id="research-vm" type="password" autocomplete="off" required maxlength="1024"></label><label class="setting-field">AegisLab slaptažodis<input id="research-lab" type="password" autocomplete="off" required maxlength="1024"></label><button class="primary" type="submit">Prisijungti</button></form>`;
+  return `<section class="page">${header('Laboratorija','Septynios kontrolės su nekenksmingais failais prieš tikrą tyrimą.',button('Atverti įrašus ↗','open-research'))}
+    <div class="research-layout"><div class="research-steps">${steps.map(row).join('')}</div>
+    <aside class="stack"><div class="panel"><div class="eyebrow">SESIJA</div>${login}</div>
+    <div class="panel"><div class="eyebrow">BŪSENOS</div>${state('A','A · apsauga įjungta')}${state('F','F · apsauga išjungta')}<div class="fact"><span>Sutampa su laukiamu</span>${done} iš ${steps.length}</div></div>
+    <div class="panel"><div class="eyebrow">KAIP TAI VEIKIA</div><p>Kiekvienas žingsnis – vienas švarus VM ciklas: atkuriama kopija, atliekama viena patikra, rezultatas išsaugomas šiame Mac, VM vėl atkuriama. Naudojamos tik dvi mūsų nekenksmingos programos ir standartinis EICAR testinis tekstas, kuris sukuriamas tik VM viduje.</p>${r.history?`<details><summary>Veiksmų istorija</summary><pre>${esc(r.history)}</pre></details>`:''}</div></aside></div></section>`;
 }
 function resultsPage(){return `<section class="page">${header('Rezultatai','Patikros ir planai, išsaugoti už atkuriamos VM ribų.',button('Atverti aplanką ↗','open-results'))}<div class="toolbar">${segments([['all','Visi'],['vm','Windows VM'],['scanners','Skeneriai'],['plans','Planai'],['other','Kiti']],S.resultFilter,'data-result-filter')}<input id="result-search" class="search" type="search" placeholder="Ieškoti įrašo…" value="${esc(S.query)}" aria-label="Ieškoti rezultatų"></div><div class="result-layout"><div class="table-panel"><div class="table-scroll"><table class="results-table"><colgroup><col><col><col></colgroup><thead><tr><th>Įrašas</th><th>Failai</th><th>Būsena</th></tr></thead><tbody id="result-rows">${resultRows()}</tbody></table></div><div class="table-bottom"><span id="result-count">${filteredResults().length} įrašai</span><span>Originalūs įrodymai išlieka Mac</span></div></div><div class="result-detail" id="result-detail">${resultDetail()}</div></div></section>`;}
 async function loadResult(key){
@@ -137,6 +159,8 @@ async function action(name){
   if(name==='open-results'){await run('open_results');return;}
   if(name==='open-vm'){await run('open_vm');return;}
   if(name==='mount'){await run('mount',{},()=>toast('VM saugykla prijungta.'));await refresh();return;}
+  if(name==='open-research'){await run('open_research');return;}
+  if(name==='research-close'){await run('research_close',{},value=>{S.meta.research=value;render();toast('Laboratorijos sesija uždaryta.');});return;}
   if(name==='lab-close'){await run('lab_close',{},()=>{S.lab=null;renderLab();toast('Sesija uždaryta.');});}
 }
 document.addEventListener('click',async event=>{
@@ -150,6 +174,8 @@ document.addEventListener('click',async event=>{
       if(b.dataset.guide!=null){S.guide=Number(b.dataset.guide);render();return;}
       if(b.dataset.settingsTab){S.settingsTab=b.dataset.settingsTab;render();return;}
       if(b.dataset.pickSetting){const path=await pick(b.dataset.pickSetting);if(path)$('#'+b.dataset.target).value=path;return;}
+      if(b.dataset.researchStep){await run('research_action',{action:'step',step:b.dataset.researchStep},value=>{S.meta.research=value;render();});return;}
+      if(b.dataset.researchAnswer){await run('research_action',{action:b.dataset.researchAnswer},value=>{S.meta.research=value;render();});return;}
       if(b.dataset.labAction){let path=null;if(b.dataset.labAction==='transfer'){path=await pick('plan');if(!path)return;}await run('lab_action',{action:b.dataset.labAction,path},value=>{S.lab=value;renderLab();});return;}
     }
     const result=event.target.closest('[data-result]');if(result){await loadResult(result.dataset.result);return;}
@@ -183,6 +209,11 @@ document.addEventListener('submit',async event=>{
     const vm_credential=$('#vm-secret').value,lab_credential=$('#lab-secret').value;
     $('#vm-secret').value='';$('#lab-secret').value='';
     await run('lab_connect',{vm_credential,lab_credential},value=>{S.lab=value;renderLab();});
+  }
+  if(form.id==='research-form'){
+    const vm_credential=$('#research-vm').value,lab_credential=$('#research-lab').value;
+    $('#research-vm').value='';$('#research-lab').value='';
+    await run('research_connect',{vm_credential,lab_credential},value=>{S.meta.research=value;render();});
   }
   if(form.id==='settings-form')await run('settings',{vm_bundle:$('#vm_bundle').value,disk_image:$('#disk_image').value},()=>toast('Programos keliai išsaugoti.'));
   if(form.id==='local-form')await run('local_control',{selected:[...form.querySelectorAll('input:checked')].map(v=>v.value)},value=>{S.results=value.results;$('#local-output').textContent='Kontrolė baigta. '+value.report.files.length+' failų atsakymai išsaugoti; darbo kopijos išvalytos.';toast('Vietinė kontrolė baigta.');});
