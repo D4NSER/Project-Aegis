@@ -161,7 +161,8 @@ class LabSystem(scan.WindowsSystem):
 
 
 def probe(system):
-    state, error = scan._state(system)
+    # A cold boot can show Defender still starting (engine 0.0.0.0); wait for it as the F checks do.
+    state, error = scan._state_after_f_startup(system)
     value = {"schema": 1, "kind": "lab_probe", "observed_at_utc": system.now(), "defender": state,
              "defender_error": error, "elevated": system.elevated()}
     try:
@@ -267,7 +268,7 @@ def eicar_realtime(system, work, *, limit=60, step=0.5):
 
 def eicar_custom(system, work, *, settle=5, limit=30, step=1, scan_timeout=60):
     """State F: a positive answer can come only from the separate custom scan."""
-    before, error = scan._state(system)
+    before, error = scan._state_after_f_startup(system)
     target = Path(work) / ("eicar-custom-" + uuid.uuid4().hex[:8] + ".txt")
     started = system.now()
     report = {"schema": 1, "kind": "eicar_custom_control", "expected_state": "F", "target": str(target),

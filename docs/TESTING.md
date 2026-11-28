@@ -395,6 +395,62 @@ and accounting figures are compared with the expectations frozen in the plan.
 `tests/test_rehearsal_run.py` runs the whole sequence with the fake VM and the
 real guest-side decision code on a fake Windows system.
 
+## Generation log, model adapters and model controls (stage 6)
+
+`src/model_adapter.py` fixes the model setup before any attempt: model
+identifier, access route, generation settings and the task templates are
+written once and identified by hashes; a changed template or setting is
+refused. Request and response texts go only to a private exchange folder; the
+log keeps their SHA-256 hashes. `SimulatedAdapter` answers from prepared
+responses; `ManualAdapter` waits for a researcher's pasted response and stops
+the session as pending until it exists; its duration is the researcher's wait,
+fixed when the response is first taken and summarised apart from model time.
+The setup ID covers model, access, mode, settings and templates and is
+recomputed on loading, so an edited setup record is refused. Each attempt is
+logged once: finishing it twice, writing its record twice or a copied record
+file is refused. A refusal is recorded, never bypassed.
+
+`src/generation.py` runs one candidate per session: one initial request and at
+most three repairs that carry only compile errors or functionality reasons.
+Building and the card check are supplied by the caller, so nothing is compiled
+or run here. Outcomes are `REFUSED`, `COMPILE_FAIL`, `FUNC_FAIL`,
+`FUNC_INCONCLUSIVE` (technical faults are not repaired), `DUPLICATE` (same
+source once comments and whitespace are removed, or the same file hash as the
+original or an accepted variant) and `ACCEPTED`. Rule sessions repair static
+rejections without a YARA run and otherwise decide from recorded calibration
+results with `repair_feedback`. The two model controls use harmless programs:
+the code control passes as an accepted variant; the rule control passes when
+the rule compiles, matches the marker file, does not match a same-length
+changed-marker copy and passes the static checks (no file name or path).
+
+`src/generation_log.py` writes one record per finished attempt (setup hashes,
+session, turns with hashes and durations, repairs, researcher build changes,
+outcome, artifact hashes, changed lines) and summarises outcomes, the usable
+share and the cost figures (requests, repairs, refusals, model time,
+failures). `tests/test_generation.py` uses prepared responses and a harmless
+C example.
+
+## Costs and failures table (1d)
+
+`src/cost_table.py` builds the A14 tables only from attempt records that pass
+validation (shape, repair counts, refusals, finite non-negative durations) and
+are unique by attempt ID: an invalid or repeated record stops the table. Shape
+checks cannot detect every edit of a record. A missing or empty log, or an
+accounting file that is not a report with status counts, is refused before the
+output folder is created. Per task it reports
+attempts and outcomes, the usable share (accepted / attempts, with numerator
+and denominator), requests (initial and repairs), repairs, refusals, attempts
+without a usable result and, of those, failures (duplicates excluded), model
+time and, separately, the researcher's wait for manual responses, and
+build-setting changes. `generation.csv` repeats the outcomes per original or
+target; an optional accounting report adds the detector checks without a valid
+response (ERROR, INCONCLUSIVE, NOT_RUN) per tool. Output is CSV plus a LaTeX
+fragment, written to a new folder outside the repository.
+`tests/test_cost_table.py` builds a small log with the real session code
+(refusal, repaired compile error, duplicate, failure after three repairs, a
+manual answer with a build change, a repaired rule) and checks every figure
+against a hand count.
+
 ## Research-mode accounting, the execution guard and segments
 
 `mode: research` (see `config/research.example.json`) accepts only evidence

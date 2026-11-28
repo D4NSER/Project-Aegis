@@ -148,6 +148,20 @@ class EicarControlTests(unittest.TestCase):
         self.assertEqual((report["status"], report["reason"]), ("INCONCLUSIVE", "NOT_PRESENT_FOR_CUSTOM_SCAN"))
         self.assertEqual(system.commands, [])
 
+    def test_a_cold_f_boot_waits_for_defender_in_probe_and_custom_scan(self):
+        startup = dict(STATE_F, AntivirusEnabled=False, AMEngineVersion="0.0.0.0", AntivirusSignatureVersion=None)
+        system = FakeLab([startup, STATE_F])
+        system.inventory = lambda: {"active_network_adapters": []}
+        self.assertEqual(lab.probe(system)["state"], "F")
+        self.assertEqual(system.slept, [5])
+        system = FakeLab([startup, STATE_F])
+        scanned = []
+        system.handler = lambda args, timeout: scanned.append(args) or {"exit_code": 0, "stdout": "", "stderr": ""}
+        system.events = lambda since: [record(system.written[0], "User")] if scanned else []
+        report = lab.eicar_custom(system, self.work)
+        self.assertEqual((report["status"], report["defender_before"]["AMEngineVersion"]), ("DETECTED", "1.1.1"))
+        self.assertEqual(system.slept[0], 5)
+
     def test_elevated_actions_need_elevation(self):
         system = FakeLab([STATE_A], elevated=False)
         with self.assertRaisesRegex(ValueError, "UAC"):

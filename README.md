@@ -29,6 +29,10 @@ The desktop app's Laboratorija section runs these seven controls step by step,
 and `src/rehearsal_run.py` joins them into one rehearsal run with harmless
 stand-ins: frozen plan, `run_guard` requests, one report series and
 rehearsal-mode accounting (never reported as experiment results).
+`src/model_adapter.py`, `src/generation.py` and `src/generation_log.py` fix the
+model setup, run generation sessions through simulated or manual adapters,
+log every attempt with hashes only, and evaluate the two model controls;
+`src/cost_table.py` turns the checked log into the costs and failures tables.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 
