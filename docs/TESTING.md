@@ -1,8 +1,10 @@
 # Testing
 
 Automated tests validate the publication boundary and control-stage accounting:
-file identity, lineage and split separation, missing responses, functionality
-exclusions, shared comparison denominators, and detection-loss arithmetic.
+file identity, lineage and split separation, control copies, holdout selection,
+functionality records, missing responses, shared comparison denominators,
+recall/FPR/precision/F1, missing-response bounds and detection-loss arithmetic,
+each checked against hand-counted synthetic cases.
 They use generated inert text and synthetic labels/responses, not malware.
 The complete suite imports Tkinter for the reused UI/worker classes; it does not
 create GUI windows. Use a Python installation with Tkinter support. GitHub CI
@@ -47,12 +49,17 @@ root, choose a **new directory outside this repository**:
 python3 scripts/run_control_demo.py --output ../aegis-control-demo
 ```
 
-This creates four inert UTF-8 text files, their SHA-256 manifest, a control-only
-configuration, simulated AV/YARA observation rows and a JSON accounting report.
-One control is for calibration; three are for evaluation. One evaluation row has
-a deliberately invented YARA positive and another an unknown response. These
-exercise false-positive accounting and incomplete comparisons. They are not
-observed detector behaviour. Every report has `experiment_results: false`.
+This creates six inert UTF-8 text files, their SHA-256 manifest, a control-only
+configuration, synthetic functionality records, simulated AV/YARA observation
+rows and a JSON accounting report. Four rows are benign controls (one for
+calibration, three for evaluation); two carry a synthetic `original` label, one
+per split, so that the supplementation scenario has an independent group in each
+split. One evaluation row has a deliberately invented YARA positive and another
+an unknown response. These exercise false-positive accounting, additional
+detections and incomplete comparisons. They are not observed detector behaviour.
+Every report has `experiment_results: false`. Demonstrations created before
+manifest schema 2 (2026-11-27) lack the new manifest columns and
+`yara.ruleset_status`; recreate them in a new directory.
 
 Recalculate an existing control without overwriting its report:
 
@@ -63,27 +70,452 @@ python3 src/aegis.py --config ../aegis-control-demo/run.json \
 ```
 
 The manifest records provenance, source version, label basis, format,
-architecture, project, family, parent, split and functionality status. Related
-files must share a project ID. Distinct originals from a known family may occupy
-different splits; identifying close provenance requires human review.
-All files and evidence paths are relative to the configured external workspace.
-Duplicate hashes, changed files, cross-split projects/parents, duplicate
+architecture, project, family, parent, split, generation order, holdout flag,
+functionality status, card hash and evaluator record. Kinds are `original`,
+`variant`, `control_copy` and `benign`. Related files must share a project ID.
+Distinct originals from a known family may occupy different splits; identifying
+close provenance requires human review. Paths are relative to the configured
+external workspace, or `collection:<relative>` inside an optional read-only
+`collection_root`. Changed files, cross-split projects/parents, duplicate
 observations and mixed run/tool-state IDs are rejected. A tool-state ID must
-refer to one fixed configuration. This accounting demonstration supports only
-`mode: control`; separate inert VM/scanner reports do not become research runs.
+refer to one fixed configuration. The demonstration uses `mode: control`;
+inert VM/scanner control reports do not become research runs, and research
+mode refuses the demonstration's synthetic functionality records.
 
-`ERROR`, `INCONCLUSIVE`, `NOT_RUN`, and absent observations stay unknown.
-`true OR unknown` is true; `false OR unknown` is unknown. AV versus combined
-rates use the same subset where AV and the combined decision are known.
-Additional positives require a known AV negative and YARA positive. Originals
-and variants require `PASS`; a variant also requires its original to pass.
-Detection loss includes only known variant AV responses whose original was
-detected, independently of YARA completeness. Empty denominators yield `null`.
+Lineage rules:
+
+- A duplicate SHA-256 is accepted only for one `control_copy` and its own
+  original (a byte-identical recompilation). Each original has at most one
+  control copy; it carries no functionality outcome of its own.
+- Every variant has a positive `generation_order`, unique in its project group.
+- `holdout` must mark exactly the last eligible calibration variant of every
+  project group with at least two eligible variants, and nothing else.
+- `PASS`, `FAIL` and `INCONCLUSIVE` need a card hash and a workspace-relative
+  evaluator record whose sample hash, card hash and status match the row.
+  A variant uses its original's card. Catalogue eligibility is not functionality.
+
+Metrics, with each rate given as numerator and denominator:
+
+- `ERROR`, `INCONCLUSIVE`, `NOT_RUN` and absent observations stay unknown.
+  An AV `DETECTED` observation names `REALTIME` or `CUSTOM_SCAN` in
+  `detected_by`; every row lists it as `av_detected_by`.
+- The supplementation scenario uses eligible evaluation files only. AV, YARA
+  and their OR are compared on files where **both** AV and YARA responses are
+  valid; others are listed in `incomplete_ids`. Each tool reports TP, FN, FP,
+  TN, recall, FPR, precision and F1, plus recall separately for originals and
+  variants. Additional detections and false positives need AV=0 and YARA=1.
+- Recall and FPR bounds use all eligible evaluation files, reading every
+  missing response first as not detected and then as detected. Precision and
+  F1 have no such bounds.
+- Detection loss covers both splits. A variant counts only if it and its
+  original passed functionality, the original was detected, its control copy
+  was detected (a byte-identical copy relies on the original's response, and
+  a valid contrary copy response is a conflict), and the variant's own AV
+  response is valid. Excluded variants are counted by reason.
+- The supplementation scenario is evaluated only when both splits contain at
+  least one original project group that passed functionality; otherwise it is
+  `NOT_EVALUATED` with `INDEPENDENT_GROUPS_MISSING`.
+- `yara.ruleset_status` is `FROZEN`, `EMPTY` (no YARA observations; Y=0 for all
+  files) or `FAILED` (supplementation and holdout results are not evaluated).
+- Holdout variants are reported separately for YARA and never enter
+  supplementation metrics. Every row's inclusion reason is listed under `rows`.
+
+Write CSV tables and a LaTeX fragment to a new external directory:
+
+```sh
+python3 src/aegis.py --config ../aegis-control-demo/run.json \
+  --manifest ../aegis-control-demo/manifest.csv \
+  --observations ../aegis-control-demo/observations.csv \
+  --output ../aegis-control-report.json --tables ../aegis-control-tables
+```
+
+`src/dataset_plan.py` assigns original project groups alternately (calibration
+first) by acceptance order. It allocates whole benign project groups to the
+planned calibration/evaluation quotas (10/50 by default): the allocation assigns
+as many files as the plan allows, then keeps the fill ratios most even, then
+follows acceptance order. Neither step reads detector responses.
+`build-manifest` requires both frozen records (`--assignment`). Each record
+must group objects by their catalogue project and must equal what its rule
+gives for its own acceptance order. The command rejects a catalogue whose
+selection differs from the records or contains unrecorded objects,
+converts selected originals and benign files, and appends only variant or
+control-copy rows of selected originals from a separate manifest-format CSV.
 
 The accounting tool reads files for hashing and never executes them. It does not generate
 modifications or rules, freeze research data, verify functional behaviour, run
 Defender/YARA, or establish laboratory readiness. Simulation checks are separate
 from the planned research sample and cannot complete the research protocol.
+
+## Rule preparation without a model
+
+`src/rule_workflow.py` prepares and judges rule candidates without running a
+model, a sample or YARA. It reads file bytes on the host and decides from
+YARA compile/match outcomes that the laboratory records.
+
+- `describe` writes the model-facing description of one PE file: format,
+  machine, size and printable ASCII/UTF-16LE strings in file order, with a
+  minimum length (5), duplicates removed, a character budget (12 000) keeping
+  the first strings, and counts of found, removed, provided and omitted
+  strings. The parameters and their hash are part of the description; no
+  file name or path is included.
+- A candidate must be one plain rule. Its text strings (with `ascii`, `wide`,
+  `nocase`, `fullword` only) must occur in the description in **every**
+  encoding YARA will search (`ascii wide` needs both); hex strings, regular expressions and other modifiers cannot be
+  traced and are rejected as `REJECTED_FEATURE_NOT_IN_DESCRIPTION`. Imports,
+  includes, private/global rules, external variables such as `filename`,
+  module fields, byte-offset functions, undefined string references and
+  non-ASCII identifiers are `REJECTED_FORBIDDEN`. Only `filesize` and string references are allowed in
+  conditions.
+- `rule_package` computes the description from the target's registered bytes;
+  acceptance recomputes it and refuses an edited package. The YARA results
+  record must name the SHA-256 of the exact rule text, and every match
+  response must name the SHA-256 of the file it checked. Acceptance and
+  repair feedback share one record check: exactly the fields `rule_sha256`,
+  `compiled`, `compile_errors` and `matches`; `compiled` is true, false or an
+  explicit null (not recorded), `compile_errors` a list of strings, and each status
+  `MATCHED`, `NOT_MATCHED` or `ERROR`; any other record is refused as an
+  input error.
+- Acceptance then needs: compiled; a match on its own file; a match on at
+  least one other eligible original or non-held-out variant of the same group
+  (`NOT_APPLICABLE` when the group has none; control copies never count); no
+  match on any calibration benign file. A missing or `ERROR` response makes
+  the decision `INCOMPLETE`.
+- Rule targets are eligible, non-held-out calibration originals and variants
+  that the AV did not detect. Packages, acceptance and repair feedback refuse
+  any evaluation file or response and any held-out variant's response.
+- `freeze` combines the accepted final rules into one rule set and records its
+  SHA-256, YARA version and every decision. Targets are derived from the
+  calibration AV responses, where only `true` and `false` are valid; a
+  decision whose `accepted` flag disagrees with its status is refused. The
+  status is `FROZEN`, `EMPTY` (every candidate
+  detected, or no accepted rule) or `FAILED` (a candidate without a valid AV
+  response, a target without a final decision, or an `INCOMPLETE` one). `verify_frozen` detects later edits.
+
+Tests use generated header-only PE stubs (a DOS/PE header and inert marker
+text, no sections or code) in temporary directories and recorded results.
+
+## Detector checks of selected files and the accounting bridge
+
+`src/guest_research_scan.py` holds the guest-side decisions; files are
+scanned, never executed. Tests drive it with a fake Windows system, so no
+Defender, YARA or sample runs.
+
+- AV, state A: Defender and real-time protection must be on, otherwise
+  `ERROR`/`STATE_MISMATCH`. One file per run. After the fixed waiting period,
+  a threat-history resource or the `Path` field of event 1116/1117 that
+  equals the file's path, recorded at or after the check started, gives
+  `DETECTED` with `detected_by: REALTIME`. Every such record's detection
+  source must fit the label (`Real-Time Protection`, threat source type 3 for
+  `REALTIME`; `User` or `System`, types 1–2 for `CUSTOM_SCAN`); a contrary or
+  missing source makes the outcome `INCONCLUSIVE`. These source values are to
+  be confirmed with the laboratory's EICAR controls. Older records and other paths do not count; an exact-path record
+  without a readable time makes the history unknown. Otherwise a missing or
+  changed file is `INCONCLUSIVE`, and a custom scan runs; a record dated after
+  its start gives `CUSTOM_SCAN`, but only when the real-time lookup was
+  readable. `NOT_DETECTED` needs exit code 0, unchanged bytes and readable
+  history; the exit code alone never decides. Any valid response also needs
+  protection on and unchanged product, engine and signature versions before
+  and after, otherwise it becomes `INCONCLUSIVE`. A scan timeout is `ERROR`.
+- YARA, state F: real-time protection must be off, and `--version` must exit
+  0 and print a version, otherwise every file is `ERROR`. The YARA executable
+  and the frozen rule set must match their pinned hashes; if either is missing
+  or differs, the check refuses to start and produces no record. Each
+  file is `MATCHED` (with rule names), `NOT_MATCHED`, `ERROR` (timeout, exit
+  code, unexpected output, unreadable or changed file) or `NOT_RUN` (missing
+  input); one file's error never stops the series.
+- Candidate rules: a compile check on an empty file, then per-file matches,
+  returned as the four-field record that `rule_workflow.accept_rule` expects.
+  Only diagnostics that point into the candidate file make `compiled: false`;
+  a technical failure while running YARA leaves `compiled: null`, so
+  acceptance stays `INCOMPLETE`. A missing or different pinned YARA
+  executable is refused before anything runs, and no record is produced.
+
+`src/scan_bridge.py` validates stored reports and writes the observation CSV
+for `src/aegis.py`, with each report as evidence. YARA `MATCHED` and
+`NOT_MATCHED` become `DETECTED` and `NOT_DETECTED`; `ERROR` and `NOT_RUN`
+stay unknown. The bridge re-checks each valid response against its evidence:
+an AV response needs state A and unchanged versions before and after, at
+least one real-time or custom-scan record whose sources fit the label, and for a negative a completed scan
+of unchanged bytes with readable history; a YARA response needs state F and a
+recorded version of the form `x.y.z`, and an incomplete one needs its reason. Tool-state IDs are derived from the Defender product, engine
+and signature versions and from the YARA version, executable and rule-set
+hashes; a series whose state changes is refused. Observations now carry
+`detected_by`, required for AV detections and forbidden otherwise.
+Deploying these checks into the VM, one AV file per restore cycle, is a
+separate laboratory step.
+
+## Functionality cards and their evaluator
+
+`src/functionality_card.py` keeps cards as data and judges recorded runs; it
+executes nothing. A card names the input argument templates, the time limit,
+the expected exit code, stdout, empty stderr and exact owned-file contents
+(with a `{token}` placeholder), and the Process Monitor operations that must
+be observed. Its SHA-256 over canonical JSON is the manifest's `card_sha256`;
+any change gives a new hash, so the same card judges an original and all its
+variants.
+
+Outcomes for one recorded run:
+
+- `NOT_RUN` when the program was not launched;
+- `INCONCLUSIVE` when the outcome cannot be established: the launch was not
+  confirmed, the process ID is unknown, monitoring was not captured or not
+  complete, a technical error was recorded, the recorded arguments differ
+  from the card's filled templates, the elapsed time or timeout flag is not
+  a finite recorded value, the exit code is not a recorded integer (it may be
+  absent only for a process killed at the time limit), stdout, stderr or the
+  owned-file hashes are not recorded, or the monitor holds no event of the
+  process;
+- `FAIL` when monitoring was complete and a condition is not met, including a
+  confirmed run past the card's time limit, a wrong exit code or output, a
+  missing or different owned file, or a required operation not observed for
+  this process at the expected path;
+- `PASS` otherwise.
+
+A run record must name the hash of the file it launched and, when a trace
+was captured, a valid hash of its Process Monitor CSV equal to the supplied
+export's hash; evidence of another file
+or trace is refused. The card's time limit must be a finite positive number.
+The functionality record (sample hash, card hash, status, `synthetic`) is the
+one `aegis.py` validates; reasons are kept in a separate details record.
+Process Monitor CSV exports are read in UTF-16 or UTF-8. `check_control_build`
+needs a recorded compiler identity (name, version, SHA-256) and refuses a
+control copy not built from the same source, compiler and settings,
+and reports whether the output is byte-identical. Earlier rehearsal records
+keep their recorded outcomes; this classification applies from here on.
+
+## Laboratory cycles for the protocol checks (stage 3)
+
+`src/vm_research_lab.py` is a terminal command on the Mac. It asks for the VM
+encryption and lab-account credentials in hidden prompts, keeps them in memory
+only, and runs one check per cold cycle:
+
+1. revert the named snapshot (state A: real-time protection on; state F: off),
+   start it (the operator starts it in Fusion when VIX cannot) and log in;
+2. prove that every earlier reverted cycle's kit and desktop launcher are
+   absent, and record that proof beside the cycle;
+3. copy a small kit, the request and the selected files, run one action of
+   `src/guest_research_lab.py`, and keep its report on the host;
+4. shut the guest down and revert the snapshot, even after a failure.
+
+Checks that read Defender's history or start Process Monitor need ordinary
+administrator rights: the command opens the launcher in the lab desktop and the
+operator approves Windows UAC. No report within the waiting limit is a
+timeout, not a result; a guest failure record is shown and kept.
+
+Commands: `register-a --snapshot NAME` records an existing baseline as state A
+after a probe; `make-f` boots state A, shows the operator the manual steps
+(Tamper Protection off, real-time protection off by policy), probes until the
+guest is really in state F, removes the probe kit and creates an
+`Aegis-StateF-*` cold snapshot; `probe` records Windows build, VMware Tools
+version, Defender state and policy; `eicar-realtime` (A) measures how long
+Defender takes to record the official EICAR text for its exact path and keeps
+the recorded source names; `eicar-custom` (F) leaves the text on disk with
+real-time protection off, so a positive can only come from the custom scan;
+`av`, `yara` and `functionality` run the protocol checks and validate the
+reports with `scan_bridge` or apply the card evaluator. Functionality records
+from these cycles are marked synthetic: they are laboratory controls.
+
+The desktop app's **Laboratorija** section (`src/research_session.py`) runs
+the same seven controls with fixed inputs taken from saved records: the current
+cold baseline, the verified tool kit that belongs to it and the two managed
+rehearsal programs (their hashes are checked; the card and control rule are
+written once under `research-lab/inputs` and a changed copy is refused). Steps
+open in protocol order (AV control only after the EICAR calibration, which sets
+the waiting period to twice the measured time and at least 10 s). Operator
+requests appear in the page with "continue" and "cancel"; cancelling restores
+the VM. Each step's latest outcome is read back from the cycle records and
+compared with the outcome written down before the run. The section and the
+older control drawer never hold a VM connection at the same time.
+
+The first laboratory run (2026-11-28) showed that Defender's real-time
+protection in this guest records a file when it is opened, not when it is
+written: the written EICAR text stayed on disk until it was read back, then
+was blocked at once (`Real-Time Protection`, `DetectionSourceTypeID` 3). The
+real-time calibration therefore tries write, read and copy in turn and names
+the action that was followed by a record, and each AV check opens its file
+once before the calibrated wait. The custom-scan control in state F was
+recorded with source `User` (`DetectionSourceTypeID` 1) while MpCmdRun
+returned 0 despite the detection, which confirms that the exit code is kept
+for diagnostics only. The Process Monitor export was UTF-8 with columns
+`Time of Day, Process Name, PID, Operation, Path, Result, Detail`.
+
+A cycle counts only when it finished: its report passed the host's checks
+(protocol validation, file and scanner identity, the probe's state and a
+network inventory that was actually read and found empty) and its hash was
+recorded. A rejected report keeps an error record beside it, and the section
+shows that error, not the report. The restore status is shown separately:
+verified after a later boot found the kit gone, pending until then. A step
+cancelled or failed at any prompt shuts the guest down and reverts the
+snapshot; for state F this discards the operator's changes until the F
+snapshot exists. The AV check looks up Defender's records once over the whole
+check and splits them at the custom scan's start: a real-time record dated
+before the scan but written after the first lookup makes the outcome
+`INCONCLUSIVE` (`DETECTION_RECORDED_AFTER_WAIT_BEFORE_SCAN`), never a negative.
+Test fixtures use neutral synthetic guest paths.
+
+The EICAR text is created only inside the guest and never executed or copied
+to the host. `tests/test_research_lab.py` uses a fake VM with an in-memory
+guest disk and cold snapshots, so a revert really removes a kit and a
+surviving kit blocks the next cycle; Defender, Process Monitor and the guest
+programs are scripted.
+
+## Laboratory rehearsal run (frozen plan to one report series)
+
+`src/rehearsal_run.py` joins the laboratory cycles into one run that
+accounting can rebuild from saved evidence. It uses harmless stand-ins: copies
+of the two rehearsal programs, each with its own embedded work-directory token
+(so each has its own hash and work directory). Phases, each resumable from the
+run folder and shown in the app's Laboratorija section:
+
+1. plan: a catalogue of the stand-ins, the frozen original-group and benign
+   assignment records, the shared card, the stand-in rule text and the
+   expected outcomes, all hashed in `plan.json` before any check;
+2. functionality: originals and the variant run under the card (state F); the
+   evaluator's records (marked synthetic) join the manifest;
+3. calibration AV: calibration files and the evaluation original, one
+   `run_guard` request per cold cycle (state A);
+4. rules: the guard must refuse an AV check of an evaluation variant or
+   benign file and a YARA check while no freeze record exists (both refusals
+   are recorded); a candidate rule for the undetected calibration target is
+   checked in state F, accepted from its recorded results and frozen with the
+   run ID and the recorded YARA version;
+5. final AV and 6. final YARA: only through `run_guard` with the freeze record;
+7. accounting: every AV and YARA report of the run, in order, is one detector
+   series; requests and reports outside the frozen plan or run are refused.
+
+After a cold F boot, the YARA checks allow Defender to finish initializing
+when its engine still reports `0.0.0.0` and the signature version is absent.
+The checks still require state F. Rehearsal cycles do not replace the separate
+laboratory control results in the app.
+
+From stage 7 the rehearsal also runs the model path with a simulated model:
+the plan fixes the model setup (templates, settings) and the prepared
+responses by hash; a model-control phase (state F) runs the rule control on
+the marker program and a changed-marker copy (the code control waits for the
+C/C++ toolchain decision and is recorded as not run, so `model_ready` stays
+false); rule preparation goes through a generation session (static
+rejections are repaired without a YARA run); every attempt is logged, and
+accounting writes the cost tables from the log. The comparison with the
+frozen expectations covers the controls, each session's outcome, repairs and
+first rejection, and the cost figures. The rule control uses the marker program
+copied into the plan and re-checks its hash. An accounting attempt that stops
+leaves its partial outputs in an `accounting-attempt-*` folder, so the phase
+can be retried after the cause is fixed; a completed accounting is not redone.
+The final `accounting.json` is written whole under a temporary name and then
+renamed into place, and only a readable final report marks the phase complete.
+
+`mode: rehearsal` applies all research-mode evidence checks (validated reports,
+named segments, freeze record and order) but requires synthetic functionality
+records and reports `experiment_results: false`. The run's recorded outcomes
+and accounting figures are compared with the expectations frozen in the plan.
+`tests/test_rehearsal_run.py` runs the whole sequence with the fake VM and the
+real guest-side decision code on a fake Windows system.
+
+## Generation log, model adapters and model controls (stage 6)
+
+`src/model_adapter.py` fixes the model setup before any attempt: model
+identifier, access route, generation settings and the task templates are
+written once and identified by hashes; a changed template or setting is
+refused. Request and response texts go only to a private exchange folder; the
+log keeps their SHA-256 hashes. `SimulatedAdapter` answers from prepared
+responses; `ManualAdapter` waits for a researcher's pasted response and stops
+the session as pending until it exists; its duration is the researcher's wait,
+fixed when the response is first taken and summarised apart from model time.
+The setup ID covers model, access, mode, settings and templates and is
+recomputed on loading, so an edited setup record is refused. Each attempt is
+logged once: finishing it twice, writing its record twice or a copied record
+file is refused. A refusal is recorded, never bypassed.
+
+`src/generation.py` runs one candidate per session: one initial request and at
+most three repairs that carry only compile errors or functionality reasons.
+Building and the card check are supplied by the caller, so nothing is compiled
+or run here. Outcomes are `REFUSED`, `COMPILE_FAIL`, `FUNC_FAIL`,
+`FUNC_INCONCLUSIVE` (technical faults are not repaired), `DUPLICATE` (same
+source once comments and whitespace are removed, or the same file hash as the
+original or an accepted variant) and `ACCEPTED`. Rule sessions repair static
+rejections without a YARA run and otherwise decide from recorded calibration
+results with `repair_feedback`. The two model controls use harmless programs:
+the code control passes as an accepted variant; the rule control passes when
+the rule compiles, matches the marker file, does not match a same-length
+changed-marker copy and passes the static checks (no file name or path).
+
+`src/generation_log.py` writes one record per finished attempt (setup hashes,
+session, turns with hashes and durations, repairs, researcher build changes,
+outcome, artifact hashes, changed lines) and summarises outcomes, the usable
+share and the cost figures (requests, repairs, refusals, model time,
+failures). `tests/test_generation.py` uses prepared responses and a harmless
+C example.
+
+## Costs and failures table (1d)
+
+`src/cost_table.py` builds the A14 tables only from attempt records that pass
+validation (shape, repair counts, refusals, finite non-negative durations) and
+are unique by attempt ID: an invalid or repeated record stops the table. Shape
+checks cannot detect every edit of a record. A missing or empty log, or an
+accounting file that is not a report with status counts, is refused before the
+output folder is created. Per task it reports
+attempts and outcomes, the usable share (accepted / attempts, with numerator
+and denominator), requests (initial and repairs), repairs, refusals, attempts
+without a usable result and, of those, failures (duplicates excluded), model
+time and, separately, the researcher's wait for manual responses, and
+build-setting changes. `generation.csv` repeats the outcomes per original or
+target; an optional accounting report adds the planned detector checks without
+a valid response (ERROR, INCONCLUSIVE, NOT_RUN) per tool, read from its
+per-file rows; frozen-rule YARA on calibration files (other than holdouts) is
+never planned and is counted apart as `not_planned`, not as a failure; under a
+FAILED rule set no YARA check is planned, and `EMPTY_RULESET` (Y(x) = 0 for an
+empty frozen set) is a valid response. Output is CSV plus a LaTeX
+fragment, written to a new folder outside the repository.
+`tests/test_cost_table.py` builds a small log with the real session code
+(refusal, repaired compile error, duplicate, failure after three repairs, a
+manual answer with a build change, a repaired rule) and checks every figure
+against a hand count.
+
+## Research-mode accounting, the execution guard and segments
+
+`mode: research` (see `config/research.example.json`) accepts only evidence
+from detector reports. On top of the control checks it requires:
+
+- a protocol version and `yara.freeze_record` of this run; the record's
+  status and rule-set hash must equal `yara.ruleset_status` and
+  `yara.ruleset_sha256`, and a FROZEN record's `frozen.yar` must still match
+  its hash;
+- `series`: the run's complete, ordered list of detector reports kept by the
+  laboratory (`kind: detector_series`), and `av.segment_id` /
+  `yara.segment_id` naming one segment of it per tool; the evidence must be
+  exactly that segment's reports, so A → B → A cannot be joined and a named
+  segment cannot be dropped by listing no rows for its tool;
+- no synthetic functionality record;
+- every observation's evidence to be a validated AV or YARA report, and the
+  rows of each report to be exactly the rows `scan_bridge` derives from it;
+- YARA evidence produced with the frozen rule set and the YARA version named
+  in the freeze record;
+- AV checks of evaluation variants and benign files, and every YARA check
+  with the frozen rule set, to have started after the freeze time
+  (originals' baseline and calibration AV checks may precede it).
+
+Supplementation with zero paired records is `NOT_EVALUATED` /
+`NO_PAIRED_RECORDS` in every mode.
+
+A tool with no reports, rows or named segment in the run (YARA for an EMPTY
+or FAILED rule set) may have `state_id: null` in research mode; control mode
+needs both state IDs. The report then names `mode: research`,
+`experiment_results: true` and the tool versions recorded in the evidence.
+
+Freeze records name their run. `src/run_guard.py` stores them without
+overwriting, refuses a record of another run, and builds guest requests only
+in an allowed order: a one-file AV request for an evaluation
+variant or benign file needs a final freeze record (FROZEN, EMPTY or FAILED)
+and carries its hash; a YARA request needs a FROZEN record. The accounting
+order check compares guest and host clock times, so it complements this
+guard rather than replacing it.
+
+`scan_bridge.py --segments` lists, per tool, consecutive reports of one run
+that share one tool state in finish-time order, each with a segment ID over
+the run, the state and the ordered report hashes; reports of another run are
+refused. A configuration change starts a new
+segment; each segment is accounted as its own run. How many records make a
+segment comparable is a protocol decision recorded outside this code.
 
 ## Native WebKit desktop
 

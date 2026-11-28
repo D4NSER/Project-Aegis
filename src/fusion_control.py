@@ -147,8 +147,9 @@ class FusionControl(FusionProbe):
 
     @staticmethod
     def snapshot_name(name):
-        if not isinstance(name, str) or not re.fullmatch(r"Aegis-Inert-[0-9a-f]{16}", name):
-            raise ValueError("Expected a managed inert-control snapshot name")
+        # Inert-control baselines and the two protocol states (A: protection on, F: off).
+        if not isinstance(name, str) or not re.fullmatch(r"Aegis-(Inert|StateA|StateF)-[0-9a-f]{16}", name):
+            raise ValueError("Expected a managed cold snapshot name")
         return name.encode("ascii")
 
     def create_cold_snapshot(self, name):

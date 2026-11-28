@@ -3,8 +3,36 @@
 Research code for evaluating malware-detection robustness and the additional
 coverage of AI-assisted YARA rules.
 
-An initial control-stage accounting implementation validates file hashes,
-provenance groups and split boundaries, and summarizes supplied detector statuses.
+A control-stage accounting implementation validates file hashes, provenance
+groups, split boundaries, control copies, holdout variants and functionality
+records, then computes the protocol's metrics from supplied detector statuses:
+paired AV/YARA/combined recall, FPR, precision and F1, missing-response bounds,
+and detection loss with per-row inclusion reasons. `src/dataset_plan.py` assigns
+splits without detector responses and converts catalogue selections to manifests.
+`src/rule_workflow.py` writes model-facing PE descriptions, checks that a YARA
+candidate only uses features from its description, decides acceptance from
+recorded calibration results, and freezes the accepted rule set by hash; it
+runs neither a model nor YARA. `src/guest_research_scan.py` decides AV (state A,
+real-time then custom scan, with `detected_by`) and frozen-rule YARA (state F)
+outcomes for selected files without executing them, and `src/scan_bridge.py`
+turns those reports into accounting observations. Research-mode accounting
+accepts only rows that match validated reports, a verified freeze record and
+the protocol's order; `src/run_guard.py` refuses guest requests that would
+break that order. `src/functionality_card.py` fixes functionality cards by
+hash and turns a recorded run and its Process Monitor rows into the
+functionality record, without executing anything.
+`src/vm_research_lab.py` runs the laboratory side of those checks in the
+Windows ARM VM, one cold cycle per check, with `src/guest_research_lab.py` in
+the guest: state A and F snapshots, EICAR calibration controls, AV, YARA and
+functionality runs under Process Monitor, each restored before the next.
+The desktop app's Laboratorija section runs these seven controls step by step,
+and `src/rehearsal_run.py` joins them into one rehearsal run with harmless
+stand-ins: frozen plan, `run_guard` requests, one report series and
+rehearsal-mode accounting (never reported as experiment results).
+`src/model_adapter.py`, `src/generation.py` and `src/generation_log.py` fix the
+model setup, run generation sessions through simulated or manual adapters,
+log every attempt with hashes only, and evaluate the two model controls;
+`src/cost_table.py` turns the checked log into the costs and failures tables.
 The demonstration uses inert text and explicitly simulated responses. It does
 not invoke antivirus software or YARA, execute samples, or run detection experiments.
 

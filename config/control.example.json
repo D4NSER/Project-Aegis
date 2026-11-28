@@ -13,6 +13,7 @@
   "yara": {
     "state_id": "simulated-yara-v1",
     "engine_version": null,
-    "ruleset_sha256": null
+    "ruleset_sha256": null,
+    "ruleset_status": "FROZEN"
   }
 }

@@ -1,0 +1,19 @@
+{
+  "run_id": "research-run-001",
+  "mode": "research",
+  "workspace": ".",
+  "collection_root": null,
+  "protocol_version": "set-before-the-experiment",
+  "series": "series.json",
+  "av": {
+    "state_id": "defender-<from scan_bridge>",
+    "segment_id": "av-1-<from scan_bridge --segments>"
+  },
+  "yara": {
+    "state_id": "yara-<from scan_bridge>",
+    "segment_id": "yara-1-<from scan_bridge --segments>",
+    "ruleset_status": "FROZEN",
+    "ruleset_sha256": "<from the freeze record>",
+    "freeze_record": "rules/freeze.json"
+  }
+}
