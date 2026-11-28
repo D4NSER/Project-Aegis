@@ -158,6 +158,16 @@ class SessionTests(unittest.TestCase):
         self.assertIn("tik nukopijavus", result["summary"])
         self.assertNotIn("av_control", self.allowed())
 
+    def test_rehearsal_phases_open_in_order_and_need_a_ready_lab(self):
+        self.session.submit("connect", ("vm-fixture", "lab-fixture"))
+        view = self.settle()
+        phases = {p["id"]: p for p in view["rehearsal"]["phases"]}
+        self.assertTrue(phases["plan"]["allowed"])
+        self.assertFalse(any(p["allowed"] for key, p in phases.items() if key != "plan"))
+        with self.assertRaisesRegex(ValueError, "iš eilės"):
+            self.session.submit("rehearsal", "functionality")
+        self.assertFalse(self.session.lab_ready())
+
     def test_cancel_stops_the_step_without_a_result(self):
         self.session.submit("connect", ("vm-fixture", "lab-fixture"))
         self.settle()
@@ -229,6 +239,24 @@ class OutcomeTests(unittest.TestCase):
         self.assertFalse(research_session.judge("register_a", self.cycle, None, "Network adapters", states)["ok"])
         states["A"]["probe_cycle"] = self.cycle.name
         self.assertTrue(research_session.judge("register_a", self.cycle, report, None, states)["ok"])
+
+    def test_a_rehearsal_cycle_does_not_replace_a_standalone_control(self):
+        panel = Path(self.temp.name) / "panel"
+        cycles = panel / "research-lab" / "cycles"
+        for action, step, request in (
+            ("av", "av_control", {"run_id": "run-rehearsal"}),
+            ("yara", "yara_control", {"run_id": "run-rehearsal"}),
+            ("functionality", "functionality_control",
+             {"run_id": "lab-old", "card": {"card_id": "rehearsal-baseline-program"}}),
+        ):
+            with self.subTest(action=action):
+                standalone = cycles / ("cycle-control-" + action)
+                rehearsal = cycles / ("cycle-rehearsal-" + action)
+                write(standalone / "cycle.json", {"action": action, "started_at_utc": "2026-11-28T10:00:00Z"})
+                write(rehearsal / "cycle.json", {"action": action, "started_at_utc": "2026-11-28T11:00:00Z"})
+                write(rehearsal / "request.json", request)
+                _, results = research_session.step_results(panel)
+                self.assertEqual(standalone.name, results[step]["cycle"])
 
 
 class BackendTests(unittest.TestCase):

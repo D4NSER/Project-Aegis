@@ -331,6 +331,21 @@ class YaraCheckTests(unittest.TestCase):
             grs.yara_check(FakeSystem([STATE_F]), self.files, yara=self.yara, yara_sha256="0" * 64,
                            ruleset=self.rules, ruleset_sha256=grs.sha256(self.rules), run_id="run-1")
 
+    def test_cold_f_boot_waits_for_defender_before_yara(self):
+        startup = dict(STATE_F, AntivirusEnabled=False, AMEngineVersion="0.0.0.0",
+                       AntivirusSignatureVersion=None)
+
+        def run(args, timeout):
+            return {"exit_code": 0, "stdout": "4.6.0\n" if args[1] == "--version" else "", "stderr": ""}
+
+        for ready in (True, False):
+            with self.subTest(ready=ready):
+                system = FakeSystem([startup, STATE_F] if ready else [startup], run=run)
+                report = grs.yara_check(system, self.files, yara=self.yara, yara_sha256=grs.sha256(self.yara),
+                                        ruleset=self.rules, ruleset_sha256=grs.sha256(self.rules), run_id="run-1")
+                self.assertEqual([5] if ready else [5] * 6, system.slept)
+                self.assertEqual({"NOT_MATCHED"} if ready else {"ERROR"}, {f["status"] for f in report["files"]})
+
     def test_candidate_check_produces_the_acceptance_record(self):
         text = 'rule Candidate { strings: $a = "Marker" condition: $a }\n'
 
@@ -340,9 +355,12 @@ class YaraCheckTests(unittest.TestCase):
             path = str(args[-1])
             return {"exit_code": 0, "stdout": ("Candidate " + path + "\n") if path.endswith("a.bin") else "",
                     "stderr": ""}
-        system = FakeSystem([STATE_F], run=compiles)
+        startup = dict(STATE_F, AntivirusEnabled=False, AMEngineVersion="0.0.0.0",
+                       AntivirusSignatureVersion=None)
+        system = FakeSystem([startup, STATE_F], run=compiles)
         report = grs.candidate_check(system, text, self.files[:2], yara=self.yara, yara_sha256=grs.sha256(self.yara),
                                      workdir=Path(self.temp.name) / "candidate-1")
+        self.assertEqual([5], system.slept)
         results = report["results"]
         self.assertEqual(rule_workflow.RESULT_FIELDS, set(results))
         self.assertTrue(results["compiled"])

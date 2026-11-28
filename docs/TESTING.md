@@ -359,6 +359,42 @@ guest disk and cold snapshots, so a revert really removes a kit and a
 surviving kit blocks the next cycle; Defender, Process Monitor and the guest
 programs are scripted.
 
+## Laboratory rehearsal run (frozen plan to one report series)
+
+`src/rehearsal_run.py` joins the laboratory cycles into one run that
+accounting can rebuild from saved evidence. It uses harmless stand-ins: copies
+of the two rehearsal programs, each with its own embedded work-directory token
+(so each has its own hash and work directory). Phases, each resumable from the
+run folder and shown in the app's Laboratorija section:
+
+1. plan: a catalogue of the stand-ins, the frozen original-group and benign
+   assignment records, the shared card, the stand-in rule text and the
+   expected outcomes, all hashed in `plan.json` before any check;
+2. functionality: originals and the variant run under the card (state F); the
+   evaluator's records (marked synthetic) join the manifest;
+3. calibration AV: calibration files and the evaluation original, one
+   `run_guard` request per cold cycle (state A);
+4. rules: the guard must refuse an AV check of an evaluation variant or
+   benign file and a YARA check while no freeze record exists (both refusals
+   are recorded); a candidate rule for the undetected calibration target is
+   checked in state F, accepted from its recorded results and frozen with the
+   run ID and the recorded YARA version;
+5. final AV and 6. final YARA: only through `run_guard` with the freeze record;
+7. accounting: every AV and YARA report of the run, in order, is one detector
+   series; requests and reports outside the frozen plan or run are refused.
+
+After a cold F boot, the YARA checks allow Defender to finish initializing
+when its engine still reports `0.0.0.0` and the signature version is absent.
+The checks still require state F. Rehearsal cycles do not replace the separate
+laboratory control results in the app.
+
+`mode: rehearsal` applies all research-mode evidence checks (validated reports,
+named segments, freeze record and order) but requires synthetic functionality
+records and reports `experiment_results: false`. The run's recorded outcomes
+and accounting figures are compared with the expectations frozen in the plan.
+`tests/test_rehearsal_run.py` runs the whole sequence with the fake VM and the
+real guest-side decision code on a fake Windows system.
+
 ## Research-mode accounting, the execution guard and segments
 
 `mode: research` (see `config/research.example.json`) accepts only evidence

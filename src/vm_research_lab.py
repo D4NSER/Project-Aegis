@@ -37,7 +37,8 @@ from fusion_control import ManualBootRequired
 
 SOURCES = ("aegis.py", "control_workspace.py", "guest_control.py", "guest_scanners.py",
            "guest_research_scan.py", "guest_research_lab.py")
-STATE_OF = {"eicar_realtime": "A", "av": "A", "eicar_custom": "F", "yara": "F", "functionality": "F"}
+STATE_OF = {"eicar_realtime": "A", "av": "A", "eicar_custom": "F", "yara": "F", "candidate": "F",
+            "functionality": "F"}
 POWERSHELL = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 REPORT_LIMIT = 4 * 1024 * 1024
 CSV_LIMIT = 128 * 1024 * 1024
@@ -436,6 +437,66 @@ class ResearchLab:
                     or [f["sha256"] for f in report["files"]] != [i["sha256"] for i in items]):
                 raise ValueError("YARA report does not match what was sent")
         return self.cycle("yara", request, files, check=check)
+
+    # --- requests built by run_guard ---------------------------------------------
+    @staticmethod
+    def _request_files(request, sources):
+        """Upload exactly the request's files; each source must hash to the request's SHA-256."""
+        files = {}
+        for item in request["files"]:
+            source = aegis.external_path(sources[item["sample_id"]])
+            if source.is_symlink() or not source.is_file() or digest(source) != item["sha256"]:
+                raise ValueError("A requested file is missing or differs from the plan: " + item["sample_id"])
+            if item["path"] != "files/" + item["sample_id"] + ".bin":
+                raise ValueError("Unexpected guest path in the request: " + item["sample_id"])
+            files[item["path"]] = source
+        return files
+
+    def av_request(self, request, sources):
+        """Run one guarded AV request (`run_guard.prepare_av_request`) unchanged; its run ID is kept."""
+        if request.get("kind") != "av_check" or len(request.get("files", [])) != 1 or not request.get("run_id"):
+            raise ValueError("Expected one guarded AV request")
+        (item,) = request["files"]
+
+        def check(_, report):
+            scan_bridge.validate_av(report)
+            if (report["run_id"] != request["run_id"] or report["sample_id"] != item["sample_id"]
+                    or report["sha256"] != item["sha256"] or report["wait_seconds"] != request["wait_seconds"]
+                    or report["code_sha256"] != digest(self.source / "guest_research_scan.py")):
+                raise ValueError("AV report does not match its guarded request")
+        return self.cycle("av", request, self._request_files(request, sources), check=check)
+
+    def yara_request(self, request, sources, ruleset):
+        """Run one guarded YARA request (`run_guard.prepare_yara_request`) with its frozen rule set."""
+        ruleset = aegis.external_path(ruleset)
+        if request.get("kind") != "yara_check" or digest(ruleset) != request.get("ruleset_sha256"):
+            raise ValueError("Expected a guarded YARA request with its frozen rule set")
+        if request.get("yara_sha256") != self.tools["yara_sha256"]:
+            raise ValueError("The request names another YARA executable than the prepared one")
+        files = {**self._request_files(request, sources), "frozen.yar": ruleset}
+        guest = {**request, "yara": str(PureWindowsPath(self.tools["guest_root"]) / "yara64.exe")}
+
+        def check(_, report):
+            scan_bridge.validate_yara(report)
+            if (report["run_id"] != request["run_id"] or report["ruleset_sha256"] != request["ruleset_sha256"]
+                    or report["yara_sha256"] != request["yara_sha256"]
+                    or [(f["sample_id"], f["sha256"]) for f in report["files"]]
+                    != [(f["sample_id"], f["sha256"]) for f in request["files"]]):
+                raise ValueError("YARA report does not match its guarded request")
+        return self.cycle("yara", guest, files, check=check)
+
+    def candidate(self, rule_text, files, sources, *, run_id):
+        """Compile check and calibration matches of one candidate rule (state F)."""
+        request = {"kind": "candidate_check", "run_id": run_id, "rule_text": rule_text, "files": files,
+                   "yara": str(PureWindowsPath(self.tools["guest_root"]) / "yara64.exe"),
+                   "yara_sha256": self.tools["yara_sha256"]}
+
+        def check(_, report):
+            results = report.get("results") if report.get("kind") == "candidate_check" else None
+            if (not isinstance(results, dict) or results.get("rule_sha256")
+                    != hashlib.sha256(rule_text.encode("utf-8")).hexdigest()):
+                raise ValueError("Candidate results do not belong to this rule text")
+        return self.cycle("candidate", request, self._request_files(request, sources), check=check)
 
     def functionality(self, card_path, runs):
         """`runs`: [(sample_id, host path, guest work directory)] judged by one card."""

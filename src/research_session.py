@@ -44,6 +44,73 @@ STEPS = (
      "expected": "baseline – atitinka (PASS); variant – neatitinka dėl išvesties (FAIL: STDOUT)."},
 )
 STEP_IDS = [step["id"] for step in STEPS]
+REHEARSAL = (
+    {"id": "plan", "title": "Paruošti ir užfiksuoti planą", "state": "Mac", "uac": False,
+     "what": "Iš dviejų nekenksmingų programų sukuriami penki skirtingi failai, jų katalogas ir užfiksuotas grupių "
+             "priskyrimas. Laukiami rezultatai įrašomi prieš bet kokią patikrą."},
+    {"id": "functionality", "title": "Funkcionalumas", "state": "F", "uac": True,
+     "what": "Originalai ir variantas paleidžiami su Process Monitor pagal bendrą kortelę; iš įrašų sudaromas manifestas."},
+    {"id": "calibration_av", "title": "Kalibravimo AV patikros", "state": "A", "uac": True,
+     "what": "Kalibravimo failai ir vertinimo originalas – po vieną ciklą, tik per run_guard užklausas."},
+    {"id": "rules", "title": "Sargas, taisyklė ir užfiksavimas", "state": "F", "uac": False,
+     "what": "Pirma įrodoma, kad run_guard neleidžia galutinių patikrų be užfiksuoto rinkinio; tada taisyklė "
+             "tikrinama kalibravimo failais, priimama ir užfiksuojama su bandymo ID."},
+    {"id": "final_av", "title": "Galutinės AV patikros", "state": "A", "uac": True,
+     "what": "Vertinimo variantas ir nekenksmingas failas – tik su užfiksavimo įrašu."},
+    {"id": "final_yara", "title": "Galutinė YARA patikra", "state": "F", "uac": False,
+     "what": "Užfiksuotas rinkinys taikomas vertinimo failams."},
+    {"id": "accounting", "title": "Bendra serija ir apskaita", "state": "Mac", "uac": False,
+     "what": "Visos AV ir YARA ataskaitos sujungiamos į vieną seriją; apskaita jas tikrina kaip tyrimo bandymą."},
+)
+HOST_PHASES = {"plan", "accounting"}
+
+
+def rehearsal_view(workspace, inputs=None):
+    """The current rehearsal run's phases, read from its folder."""
+    import rehearsal_run
+    run = rehearsal_run.RehearsalRun(workspace, inputs or {})
+    upcoming = run.next_phase()
+    finished = run.done("accounting")
+    phases = []
+    for phase in REHEARSAL:
+        done = run.done(phase["id"])
+        phases.append({**phase, "done": done,
+                       "next": (phase["id"] == upcoming) or (finished and phase["id"] == "plan"),
+                       "summary": _phase_summary(run, phase["id"]) if done else None})
+    comparison = None
+    if finished:
+        comparison = rehearsal_run.read(run.root / "accounting.json").get("expected_comparison")
+    return {"run_id": run.run_id, "finished": finished, "phases": phases, "comparison": comparison}
+
+
+def _phase_summary(run, phase):
+    import rehearsal_run
+    read = rehearsal_run.read
+    try:
+        if phase == "plan":
+            return "Bandymas " + run.run_id + " · 5 failai, planas užfiksuotas"
+        if phase == "functionality":
+            results = read(run.root / "functionality.json")["results"]
+            return " · ".join(r["sample_id"] + ": " + r["status"] for r in results)
+        if phase in {"calibration_av", "final_av"}:
+            reports = read(run.root / ("calibration-av.json" if phase == "calibration_av" else "final-av.json"))
+            return " · ".join(key + ": " + read(run.root / rel)["status"] for key, rel in reports["reports"].items())
+        if phase == "rules":
+            freeze = read(run.root / "rules" / "freeze" / "freeze.json")
+            refusals = read(run.root / "guard-refusals.json")["refusals"]
+            return "Sargas atmetė " + str(len(refusals)) + " galutines patikras · rinkinys " + freeze["status"]
+        if phase == "final_yara":
+            reports = read(run.root / "final-yara.json")["reports"]
+            if not reports:
+                return "YARA nevykdyta (rinkinys ne FROZEN)"
+            return " · ".join(f["sample_id"] + ": " + f["status"] for f in read(run.root / reports[0])["files"])
+        if phase == "accounting":
+            comparison = read(run.root / "accounting.json")["expected_comparison"]
+            same = sum(1 for item in comparison.values() if item["same"])
+            return str(same) + " iš " + str(len(comparison)) + " grupių sutampa su laukiamu; viena serija, " \
+                "apskaita priėmė (ne eksperimento rezultatai)"
+    except (OSError, ValueError, KeyError) as exc:
+        return "Įrašo nepavyko perskaityti: " + str(exc)[:200]
 CARD = {"schema": 1, "kind": "functionality_card", "card_id": "lab-control-baseline",
         "original_id": "lab-control-baseline", "created_at_utc": "2026-11-28T12:00:00+00:00",
         "input": {"arguments": ["{workdir}", "{token}"]}, "time_limit_seconds": 8,
@@ -169,6 +236,12 @@ def step_results(workspace):
                     "yara": "yara_control", "functionality": "functionality_control"}.get(action)
             if step is None:
                 continue
+            request_path = folder / "request.json"
+            if request_path.is_file():
+                request = _read(request_path)
+                if (request.get("run_id", "").startswith("run-") or
+                        (action == "functionality" and request["card"]["card_id"] != CARD["card_id"])):
+                    continue
         report, error = _outcome(folder)
         results[step] = judge(step, folder, report, error, states)
     return states, results
@@ -296,11 +369,24 @@ class ResearchSession:
                 raise ValueError("Pirmiausia prisijunk prie laboratorijos.")
             if payload not in self.allowed():
                 raise ValueError("Šis žingsnis dabar neprieinamas.")
+        elif action == "rehearsal":
+            view = rehearsal_view(self.workspace)
+            allowed = [p["id"] for p in view["phases"] if p["next"]]
+            if payload not in allowed:
+                raise ValueError("Bandymo etapai vykdomi iš eilės; šis dabar neprieinamas.")
+            if payload not in HOST_PHASES and not self.lab:
+                raise ValueError("Šiam etapui reikia laboratorijos sesijos.")
+            if payload not in HOST_PHASES and not self.lab_ready():
+                raise ValueError("Pirmiausia turi sutapti būsenos A ir F bei EICAR kalibravimas.")
         else:
             raise ValueError("Neatpažintas laboratorijos veiksmas.")
         self.busy = True
-        self.running = payload if action == "step" else None
+        self.running = payload if action in {"step", "rehearsal"} else None
         self.actions.put((action, payload))
+
+    def lab_ready(self):
+        states, results = step_results(self.workspace)
+        return bool(states["A"] and states["F"] and (results.get("eicar_realtime") or {}).get("wait_seconds"))
 
     def allowed(self):
         states, results = step_results(self.workspace)
@@ -319,6 +405,8 @@ class ResearchSession:
             try:
                 if action == "connect":
                     self.connect(*payload)
+                elif action == "rehearsal":
+                    self.run_rehearsal(payload)
                 else:
                     self.run_step(payload)
             except Exception as exc:  # The cycle records keep the details; the UI shows the message.
@@ -362,6 +450,29 @@ class ResearchSession:
         self.log(title + ": " + str(result.get("summary", "baigta"))
                  + (" — sutampa su laukiamu." if result.get("ok") else " — NESUTAMPA su laukiamu, peržiūrėk."))
 
+    def run_rehearsal(self, phase):
+        import rehearsal_run
+        title = next(p["title"] for p in REHEARSAL if p["id"] == phase)
+        self.log("Bandymas: " + title + "…")
+        inputs = lab_inputs(self.workspace)
+        run = rehearsal_run.RehearsalRun(self.workspace, inputs)
+        wait = (step_results(self.workspace)[1].get("eicar_realtime") or {}).get("wait_seconds")
+        if phase == "plan":
+            run.prepare_plan()
+        elif phase == "functionality":
+            run.functionality(self.lab)
+        elif phase == "calibration_av":
+            run.calibration_av(self.lab, wait)
+        elif phase == "rules":
+            run.rules(self.lab)
+        elif phase == "final_av":
+            run.final_av(self.lab, wait)
+        elif phase == "final_yara":
+            run.final_yara(self.lab)
+        elif phase == "accounting":
+            run.accounting()
+        self.log("Bandymas: " + title + " – " + str(_phase_summary(run, phase)))
+
     def snapshot(self):
         states, results = step_results(self.workspace)
         allowed = [] if self.busy or not self.lab else self.allowed()
@@ -370,7 +481,9 @@ class ResearchSession:
                 "states": {k: ({"snapshot": v["snapshot"], "registered_at_utc": v["registered_at_utc"]} if v else None)
                            for k, v in states.items()},
                 "steps": [{**step, "allowed": step["id"] in allowed, "result": results.get(step["id"])}
-                          for step in STEPS]}
+                          for step in STEPS],
+                "rehearsal": _rehearsal_or_error(self.workspace, ready=not self.busy and (
+                    bool(self.lab) and self.lab_ready()))}
 
     def disconnect(self):
         if self.busy:
@@ -391,4 +504,16 @@ def overview(workspace):
             "waiting": None, "history": "",
             "states": {k: ({"snapshot": v["snapshot"], "registered_at_utc": v["registered_at_utc"]} if v else None)
                        for k, v in states.items()},
-            "steps": [{**step, "allowed": False, "result": results.get(step["id"])} for step in STEPS]}
+            "steps": [{**step, "allowed": False, "result": results.get(step["id"])} for step in STEPS],
+            "rehearsal": _rehearsal_or_error(workspace, ready=False, connected=False)}
+
+
+def _rehearsal_or_error(workspace, *, ready, connected=True):
+    """Phases with `allowed` set: host phases any time they are next, VM phases only in a ready session."""
+    try:
+        view = rehearsal_view(workspace)
+    except (OSError, ValueError, KeyError) as exc:
+        return {"error": str(exc)[:300]}
+    for phase in view["phases"]:
+        phase["allowed"] = connected and phase["next"] and (phase["id"] in HOST_PHASES or ready)
+    return view

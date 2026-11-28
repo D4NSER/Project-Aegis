@@ -523,7 +523,7 @@ class AccountingTests(unittest.TestCase):
             aegis.run(self.workspace / "run.json", self.workspace / "manifest.csv", self.workspace / "observations.csv")
         self.config.update(mode="experiment")
         (self.workspace / "run.json").write_text(json.dumps(self.config))
-        with self.assertRaisesRegex(ValueError, "control or research runs only"):
+        with self.assertRaisesRegex(ValueError, "control, rehearsal or research runs only"):
             aegis.run(self.workspace / "run.json", self.workspace / "manifest.csv", self.workspace / "observations.csv")
 
     def test_rule_set_status_is_required(self):

@@ -163,6 +163,20 @@ def state_matches(state, expected):
             and state.get("RealTimeProtectionEnabled") is STATE_REALTIME[expected])
 
 
+def _state_after_f_startup(system):
+    """Allow the Defender engine to initialize on a cold boot before checking state F."""
+    state, error = _state(system)
+    for _ in range(6):
+        if (state is None or state.get("AntivirusEnabled") is not False
+                or state.get("RealTimeProtectionEnabled") is not False
+                or state.get("AMEngineVersion") != "0.0.0.0"
+                or state.get("AntivirusSignatureVersion")):
+            break
+        system.sleep(5)
+        state, error = _state(system)
+    return state, error
+
+
 def versions_stable(before, after):
     return (isinstance(before, dict) and isinstance(after, dict)
             and all(before.get(k) and before.get(k) == after.get(k) for k in VERSION_FIELDS))
@@ -345,7 +359,7 @@ def yara_check(system, files, *, yara, yara_sha256, ruleset, ruleset_sha256, tim
     """`files`: [(sample_id, path, sha256)]; the frozen rule set must match its freeze hash."""
     yara = _pinned(yara, yara_sha256, "YARA executable")
     ruleset = _pinned(ruleset, ruleset_sha256, "Frozen rule set")
-    state, error = _state(system)
+    state, error = _state_after_f_startup(system)
     try:
         answer = system.run([yara, "--version"], 15)
         text = answer["stdout"].strip()
@@ -384,7 +398,7 @@ def candidate_check(system, rule_text, files, *, yara, yara_sha256, workdir, tim
     rule_path, empty = workdir / "candidate.yar", workdir / "empty.bin"
     rule_path.write_bytes(rule_text.encode("utf-8"))
     empty.write_bytes(b"")
-    state, _ = _state(system)
+    state, _ = _state_after_f_startup(system)
     results = {"rule_sha256": hashlib.sha256(rule_text.encode("utf-8")).hexdigest(),
                "compiled": None, "compile_errors": [], "matches": {}}
     technical = None

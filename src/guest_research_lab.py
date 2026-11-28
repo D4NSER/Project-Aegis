@@ -13,6 +13,8 @@ Runs inside the Windows guest from a kit that the host prepared. Actions:
                    separate custom scan; its recorded source names are kept;
 * av / yara      - the protocol checks of `guest_research_scan` on files the
                    host supplied;
+* candidate      - state F: a candidate rule's compile check and calibration
+                   matches, as the results record rule acceptance expects;
 * functionality  - files are launched under Process Monitor exactly as their
                    functionality card says; the run records and the CSV export
                    go back to the host, which applies the card evaluator.
@@ -37,7 +39,7 @@ import guest_research_scan as scan
 
 # The official harmless 68-byte EICAR test text; written only inside the guest.
 EICAR = base64.b64decode("WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=")
-ACTIONS = ("probe", "eicar_realtime", "eicar_custom", "av", "yara", "functionality")
+ACTIONS = ("probe", "eicar_realtime", "eicar_custom", "av", "yara", "candidate", "functionality")
 ELEVATED = {"eicar_realtime", "eicar_custom", "av", "functionality"}
 POLICY_KEY = r"HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
 
@@ -392,6 +394,16 @@ def perform(system, action, request, root):
         value = scan.yara_check(system, files, yara=request["yara"], yara_sha256=request["yara_sha256"],
                                 ruleset=root / "frozen.yar", ruleset_sha256=request["ruleset_sha256"],
                                 run_id=request["run_id"])
+    elif action == "candidate":
+        files = [(f["sample_id"], root / f["path"], f["sha256"]) for f in request["files"]]
+        value = scan.candidate_check(system, request["rule_text"], files, yara=request["yara"],
+                                     yara_sha256=request["yara_sha256"], workdir=work / "candidate")
+        try:  # recorded for the freeze record; only a successful query that prints a version counts
+            answer = system.run([request["yara"], "--version"], 15)
+            text = answer["stdout"].strip()
+            value["yara_version"] = text if answer["exit_code"] == 0 and scan.YARA_VERSION.fullmatch(text) else None
+        except (subprocess.TimeoutExpired, OSError):
+            value["yara_version"] = None
     elif action == "functionality":
         runs = [{**f, "path": str(root / f["path"])} for f in request["files"]]
         value = functionality(system, request["card"], runs, procmon=request["procmon"],

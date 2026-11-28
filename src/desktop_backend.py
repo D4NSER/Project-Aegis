@@ -92,7 +92,7 @@ class NativeSession(VMControlWindow):
 OPERATIONS={'refresh','demo','collection_load','catalog_check','plan','result','export',
     'open_results','open_result','mount','open_vm','settings','local_control','lab_connect',
     'lab_action','lab_close','close','research_connect','research_action','research_close','open_research'}
-RESEARCH_ACTIONS={'step','continue','cancel'}
+RESEARCH_ACTIONS={'step','continue','cancel','rehearsal'}
 
 
 class DesktopBackend:
@@ -149,7 +149,7 @@ class DesktopBackend:
             if not self.research:raise ValueError('Pirmiausia prisijunk prie laboratorijos.')
             action=args.get('action')
             if action not in RESEARCH_ACTIONS:raise ValueError('Neatpažintas laboratorijos veiksmas.')
-            self.research.submit(action,args.get('step') if action=='step' else None)
+            self.research.submit(action,args.get('step') if action in {'step','rehearsal'} else None)
             return self.research.snapshot()
         if op=='research_close':
             if self.research:self.research.disconnect();self.research=None

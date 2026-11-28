@@ -534,7 +534,7 @@ def tables(report):
     return out
 
 
-def research_evidence(config, samples, rows, workspace):
+def research_evidence(config, samples, rows, workspace, rehearsal=False):
     """Research mode: every observation must be what a validated report says.
 
     Returns the tool versions recorded in the evidence. Checks the freeze
@@ -543,7 +543,11 @@ def research_evidence(config, samples, rows, workspace):
     """
     import run_guard
     import scan_bridge
-    if any(row["functionality_synthetic"] is True for row in samples.values()):
+    if rehearsal:
+        # A laboratory rehearsal uses harmless stand-ins: its functionality records must be marked synthetic.
+        if any(row["functionality_synthetic"] is False for row in samples.values()):
+            raise ValueError("A rehearsal refuses non-synthetic functionality records")
+    elif any(row["functionality_synthetic"] is True for row in samples.values()):
         raise ValueError("Research accounting refuses synthetic functionality records")
     yara = config["yara"]
     if not yara.get("freeze_record"):
@@ -609,17 +613,17 @@ def run(config_path, manifest_path, observations_path):
     config_path = external_path(config_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     mode = config.get("mode")
-    if mode not in {"control", "research"} or not config.get("run_id"):
-        raise ValueError("Accounting accepts explicitly labelled control or research runs only")
-    if mode == "research" and not config.get("protocol_version"):
-        raise ValueError("Research mode needs a protocol version")
+    if mode not in {"control", "research", "rehearsal"} or not config.get("run_id"):
+        raise ValueError("Accounting accepts explicitly labelled control, rehearsal or research runs only")
+    if mode in {"research", "rehearsal"} and not config.get("protocol_version"):
+        raise ValueError(mode.capitalize() + " mode needs a protocol version")
     for tool in ("av", "yara"):
         if not isinstance(config.get(tool), dict):
             raise ValueError("Missing tool configuration: " + tool)
         # Research mode may leave a tool without a state when it produced nothing
         # in the run (e.g. no YARA for an EMPTY or FAILED rule set); that is checked
         # against the detector series.
-        if not config[tool].get("state_id") and mode != "research":
+        if not config[tool].get("state_id") and mode == "control":
             raise ValueError("Missing tool state ID: " + tool)
     ruleset_status = config["yara"].get("ruleset_status")
     if ruleset_status not in RULESET_STATUSES:
@@ -632,10 +636,12 @@ def run(config_path, manifest_path, observations_path):
     rows = read_csv(external_path(observations_path), OBSERVATION_FIELDS)
     detected_by = {}
     observations = validate_observations(rows, samples, config, workspace, detected_by)
-    if mode == "research":
-        tool_states = research_evidence(config, samples, rows, workspace)
+    if mode in {"research", "rehearsal"}:
+        tool_states = research_evidence(config, samples, rows, workspace, rehearsal=mode == "rehearsal")
         notice = ("Research accounting from validated detector reports. Review the evidence and the "
-                  "segments before reporting results.")
+                  "segments before reporting results." if mode == "research" else
+                  "Laboratory rehearsal: real detector reports of harmless stand-ins, checked like a research "
+                  "run. These are not experiment results.")
     else:
         tool_states = {tool: config[tool] for tool in ("av", "yara")}
         notice = "Accounting check only. Supplied detector responses are simulated; no AV or YARA ran."
