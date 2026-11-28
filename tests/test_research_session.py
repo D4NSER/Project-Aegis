@@ -168,6 +168,14 @@ class SessionTests(unittest.TestCase):
             self.session.submit("rehearsal", "functionality")
         self.assertFalse(self.session.lab_ready())
 
+    def test_a_finished_run_only_offers_a_new_plan(self):
+        run = self.panel / "rehearsals" / "run-20261128T000000-aaaaaa"
+        run.mkdir(parents=True)
+        for name in ("plan.json", "accounting.json"):
+            (run / name).write_text(json.dumps({"expected_comparison": {}}))
+        phases = {p["id"]: p for p in research_session.rehearsal_view(self.panel)["phases"]}
+        self.assertEqual([key for key, p in phases.items() if p["next"]], ["plan"])
+
     def test_cancel_stops_the_step_without_a_result(self):
         self.session.submit("connect", ("vm-fixture", "lab-fixture"))
         self.settle()

@@ -48,13 +48,16 @@ REHEARSAL = (
     {"id": "plan", "title": "Paruošti ir užfiksuoti planą", "state": "Mac", "uac": False,
      "what": "Iš dviejų nekenksmingų programų sukuriami penki skirtingi failai, jų katalogas ir užfiksuotas grupių "
              "priskyrimas. Laukiami rezultatai įrašomi prieš bet kokią patikrą."},
+    {"id": "model_control", "title": "Modelio taisyklės kontrolė", "state": "F", "uac": False,
+     "what": "Imituotas modelis pagal užfiksuotą šabloną rašo taisyklę žymeklio programai; ji turi suveikti "
+             "programai ir nesuveikti kopijai su pakeistu žymekliu. Kodo kontrolė laukia kompiliatoriaus pasirinkimo."},
     {"id": "functionality", "title": "Funkcionalumas", "state": "F", "uac": True,
      "what": "Originalai ir variantas paleidžiami su Process Monitor pagal bendrą kortelę; iš įrašų sudaromas manifestas."},
     {"id": "calibration_av", "title": "Kalibravimo AV patikros", "state": "A", "uac": True,
      "what": "Kalibravimo failai ir vertinimo originalas – po vieną ciklą, tik per run_guard užklausas."},
-    {"id": "rules", "title": "Sargas, taisyklė ir užfiksavimas", "state": "F", "uac": False,
-     "what": "Pirma įrodoma, kad run_guard neleidžia galutinių patikrų be užfiksuoto rinkinio; tada taisyklė "
-             "tikrinama kalibravimo failais, priimama ir užfiksuojama su bandymo ID."},
+    {"id": "rules", "title": "Sargas, modelio taisyklė ir užfiksavimas", "state": "F", "uac": False,
+     "what": "Pirma įrodoma, kad run_guard neleidžia galutinių patikrų be užfiksuoto rinkinio; tada imituotas "
+             "modelis rašo taisyklę, ji taisoma pagal patikras, priimama ir užfiksuojama. Visi bandymai – žurnale."},
     {"id": "final_av", "title": "Galutinės AV patikros", "state": "A", "uac": True,
      "what": "Vertinimo variantas ir nekenksmingas failas – tik su užfiksavimo įrašu."},
     {"id": "final_yara", "title": "Galutinė YARA patikra", "state": "F", "uac": False,
@@ -74,8 +77,9 @@ def rehearsal_view(workspace, inputs=None):
     phases = []
     for phase in REHEARSAL:
         done = run.done(phase["id"])
+        # A finished run only offers a new plan, even if a later version added phases it never had.
         phases.append({**phase, "done": done,
-                       "next": (phase["id"] == upcoming) or (finished and phase["id"] == "plan"),
+                       "next": (phase["id"] == "plan") if finished else (phase["id"] == upcoming),
                        "summary": _phase_summary(run, phase["id"]) if done else None})
     comparison = None
     if finished:
@@ -89,6 +93,10 @@ def _phase_summary(run, phase):
     try:
         if phase == "plan":
             return "Bandymas " + run.run_id + " · 5 failai, planas užfiksuotas"
+        if phase == "model_control":
+            control = read(run.root / "model-control.json")
+            return ("Taisyklės kontrolė: " + control["rule"]["outcome"] + " · kodo kontrolė: "
+                    + control["code"]["outcome"])
         if phase == "functionality":
             results = read(run.root / "functionality.json")["results"]
             return " · ".join(r["sample_id"] + ": " + r["status"] for r in results)
@@ -459,6 +467,8 @@ class ResearchSession:
         wait = (step_results(self.workspace)[1].get("eicar_realtime") or {}).get("wait_seconds")
         if phase == "plan":
             run.prepare_plan()
+        elif phase == "model_control":
+            run.model_control(self.lab)
         elif phase == "functionality":
             run.functionality(self.lab)
         elif phase == "calibration_av":

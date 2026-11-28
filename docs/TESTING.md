@@ -388,6 +388,22 @@ when its engine still reports `0.0.0.0` and the signature version is absent.
 The checks still require state F. Rehearsal cycles do not replace the separate
 laboratory control results in the app.
 
+From stage 7 the rehearsal also runs the model path with a simulated model:
+the plan fixes the model setup (templates, settings) and the prepared
+responses by hash; a model-control phase (state F) runs the rule control on
+the marker program and a changed-marker copy (the code control waits for the
+C/C++ toolchain decision and is recorded as not run, so `model_ready` stays
+false); rule preparation goes through a generation session (static
+rejections are repaired without a YARA run); every attempt is logged, and
+accounting writes the cost tables from the log. The comparison with the
+frozen expectations covers the controls, each session's outcome, repairs and
+first rejection, and the cost figures. The rule control uses the marker program
+copied into the plan and re-checks its hash. An accounting attempt that stops
+leaves its partial outputs in an `accounting-attempt-*` folder, so the phase
+can be retried after the cause is fixed; a completed accounting is not redone.
+The final `accounting.json` is written whole under a temporary name and then
+renamed into place, and only a readable final report marks the phase complete.
+
 `mode: rehearsal` applies all research-mode evidence checks (validated reports,
 named segments, freeze record and order) but requires synthetic functionality
 records and reports `experiment_results: false`. The run's recorded outcomes
@@ -443,8 +459,12 @@ and denominator), requests (initial and repairs), repairs, refusals, attempts
 without a usable result and, of those, failures (duplicates excluded), model
 time and, separately, the researcher's wait for manual responses, and
 build-setting changes. `generation.csv` repeats the outcomes per original or
-target; an optional accounting report adds the detector checks without a valid
-response (ERROR, INCONCLUSIVE, NOT_RUN) per tool. Output is CSV plus a LaTeX
+target; an optional accounting report adds the planned detector checks without
+a valid response (ERROR, INCONCLUSIVE, NOT_RUN) per tool, read from its
+per-file rows; frozen-rule YARA on calibration files (other than holdouts) is
+never planned and is counted apart as `not_planned`, not as a failure; under a
+FAILED rule set no YARA check is planned, and `EMPTY_RULESET` (Y(x) = 0 for an
+empty frozen set) is a valid response. Output is CSV plus a LaTeX
 fragment, written to a new folder outside the repository.
 `tests/test_cost_table.py` builds a small log with the real session code
 (refusal, repaired compile error, duplicate, failure after three repairs, a

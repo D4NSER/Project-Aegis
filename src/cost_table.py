@@ -18,8 +18,10 @@ refused before any output is written. The tables report, per task:
 * researcher build-setting changes.
 
 The generation table repeats the outcome counts per original or target. An
-optional accounting report adds the detector checks that ended without a
-valid response (ERROR, INCONCLUSIVE, NOT_RUN), per tool.
+optional accounting report adds the planned detector checks that ended without
+a valid response (ERROR, INCONCLUSIVE, NOT_RUN), per tool; checks the protocol
+never runs (frozen-rule YARA on calibration files other than holdouts) are
+counted apart as not planned, never as failures.
 """
 import argparse
 import csv
@@ -74,22 +76,43 @@ def by_subject(records):
     return table
 
 
+ROW_FIELDS = {"sample_id", "split", "holdout", "av_status", "yara_status"}
+# EMPTY_RULESET is the accounting's valid YARA response for an empty frozen set (Y(x) = 0).
+STATUSES = {"DETECTED", "NOT_DETECTED", "EMPTY_RULESET", *INCOMPLETE}
+
+
 def check_report(report):
     """An accounting report as `aegis.run` writes it; anything else is refused, never read as zeros."""
-    counts = report.get("status_counts") if isinstance(report, dict) else None
+    rows = report.get("rows") if isinstance(report, dict) else None
     if (not isinstance(report, dict) or not report.get("run_id") or report.get("mode") not in {
-            "control", "rehearsal", "research"} or not isinstance(counts, dict) or not counts
-            or not all(isinstance(k, str) and k.split(":", 1)[0] in {"av", "yara"} and ":" in k
-                       and type(v) is int and v >= 0 for k, v in counts.items())):
-        raise ValueError("Not an accounting report with status counts")
+            "control", "rehearsal", "research"} or not isinstance(rows, list) or not rows
+            or not all(isinstance(r, dict) and ROW_FIELDS <= set(r) and r["av_status"] in STATUSES
+                       and r["yara_status"] in STATUSES and r["split"] in {"calibration", "evaluation"}
+                       for r in rows)):
+        raise ValueError("Not an accounting report with per-file rows")
     return report
 
 
+def planned(tool, row, ruleset_status="FROZEN"):
+    """AV checks every file; frozen-rule YARA checks evaluation files and calibration holdouts only,
+    and only when a frozen set exists (a FAILED set is not evaluated)."""
+    if tool == "av":
+        return True
+    return ruleset_status != "FAILED" and (row["split"] == "evaluation" or row["holdout"] is True)
+
+
 def incomplete_checks(report):
-    """Detector checks without a valid response, from an accounting report's status counts."""
-    counts = check_report(report)["status_counts"]
-    return {tool: {status: counts.get(tool + ":" + status, 0) for status in INCOMPLETE}
-            for tool in ("av", "yara")}
+    """Planned detector checks without a valid response; checks the protocol never runs are counted apart."""
+    result = {tool: {**{status: 0 for status in INCOMPLETE}, "not_planned": 0} for tool in ("av", "yara")}
+    ruleset = (report.get("supplementation") or {}).get("ruleset_status", "FROZEN")
+    for row in check_report(report)["rows"]:
+        for tool in ("av", "yara"):
+            status = row[tool + "_status"]
+            if not planned(tool, row, ruleset):
+                result[tool]["not_planned"] += status == "NOT_RUN"
+            elif status in INCOMPLETE:
+                result[tool][status] += 1
+    return result
 
 
 def _csv(header, rows):
@@ -135,8 +158,9 @@ def tables(records, report=None):
                         + "\n".join(lines) + "\n")
     if report is not None:
         checks = incomplete_checks(report)
-        out["incomplete_checks.csv"] = _csv(["tool", *INCOMPLETE],
-                                            [[tool, *(checks[tool][s] for s in INCOMPLETE)] for tool in ("av", "yara")])
+        out["incomplete_checks.csv"] = _csv(["tool", *INCOMPLETE, "not_planned"],
+                                            [[tool, *(checks[tool][s] for s in (*INCOMPLETE, "not_planned"))]
+                                             for tool in ("av", "yara")])
     return out
 
 

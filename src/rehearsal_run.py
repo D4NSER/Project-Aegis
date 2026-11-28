@@ -6,23 +6,30 @@ hash and its own expected work directory, and none is malware. The phases
 follow the protocol's order:
 
 1. plan           - a collection and catalogue of the stand-ins, the frozen
-                    original-group and benign assignment records and the
-                    hashes of all of them (`plan.json`);
+                    original-group and benign assignment records, the fixed
+                    simulated model setup with its prepared responses, the
+                    expected outcomes and costs, and the hashes of all of them
+                    (`plan.json`);
+1a. model control - the rule control (state F): the model's rule must match
+                    the marker program and not a copy with a changed marker;
+                    the code control waits for the C/C++ toolchain decision;
 2. functionality  - originals and variants run once under the shared card
                     (state F); the evaluator's records join the manifest;
 3. calibration AV - calibration files and the evaluation original, one
                     guarded request (`run_guard`) per cold cycle (state A);
 4. rules          - the guard is first shown to refuse final checks, then a
-                    candidate rule for the undetected calibration target is
-                    checked (state F), accepted from its recorded results and
-                    frozen with the run ID;
+                    generation session asks the (simulated) model for a rule
+                    for each undetected calibration target; static rejections
+                    are repaired without a YARA run, candidates are checked in
+                    state F, accepted from their recorded results and frozen
+                    with the run ID; every attempt is logged;
 5. final AV       - evaluation variants and benign files, only through
                     `run_guard` with the freeze record;
 6. final YARA     - evaluation files with the frozen rule set;
 7. accounting     - every AV and YARA report of the run, in order, as one
                     detector series; rehearsal-mode accounting checks the
                     evidence like a research run and reports no experiment
-                    results.
+                    results; the cost tables are built from the attempts log.
 
 Only files of the frozen plan can be requested: requests are built from the
 manifest, and every phase first re-checks the plan's hashes. All state lives
@@ -37,7 +44,11 @@ from pathlib import Path, PureWindowsPath
 import uuid
 
 import aegis
+import cost_table
 import dataset_plan
+import generation
+import generation_log
+import model_adapter
 import functionality_card
 import rule_workflow
 import run_guard
@@ -59,20 +70,52 @@ CARD = {"schema": 1, "kind": "functionality_card", "card_id": "rehearsal-baselin
                      "files": [{"path": "observed.txt", "content": "AEGIS_OK:{token}"}]},
         "evidence": {"monitor": "process_monitor",
                      "operations": [{"operation": "WriteFile", "path": "observed.txt", "result": "SUCCESS"}]}}
-# Written before any check: what the stand-in rule is (a hand-written rule stands in for model output).
+# The simulated model's setup and prepared responses, fixed in the plan before any check.
 CANDIDATE = ('rule Aegis_Rehearsal_Baseline_Program\n{\n    strings:\n        $s = "AEGIS_REHEARSAL_BASELINE" wide\n'
              '    condition:\n        $s\n}\n')
+MARKER, CHANGED_MARKER = "AEGIS_REHEARSAL_BASELINE", "AEGIS_REHEARSAL_CHANGEDX"
+TEMPLATES = {"rule": "Write one YARA rule that recognises the file described below. Use only strings that "
+                     "appear in the description; do not use file names or paths.\n{description}\n",
+             "rule_repair": "The rule did not pass these checks. Return a corrected rule.\n{feedback}\n"}
+SETTINGS = {"responses": "prepared", "temperature": 0}
+
+
+def _yara(text):
+    return "Here is the rule.\n```yara\n" + text + "```\n"
+
+
+LOOSE = CANDIDATE.replace('"AEGIS_REHEARSAL_BASELINE"', '"AEGIS_REHEARSAL_"').replace("Program", "Prefix")
+ASCII_ONLY = CANDIDATE.replace(" wide", " ascii")
+RESPONSES = {
+    # Rule control: a too general rule (also matches the changed copy), then the marker rule.
+    "rule_control:marker-program:1:0": {"text": _yara(LOOSE), "elapsed": 1.5},
+    "rule_control:marker-program:1:1": {"text": _yara(CANDIDATE), "elapsed": 1.0},
+    # Calibration target: an ASCII search the description does not support, then the wide-string rule.
+    "rule:C1:1:0": {"text": _yara(ASCII_ONLY), "elapsed": 2.0},
+    "rule:C1:1:1": {"text": _yara(CANDIDATE), "elapsed": 1.5},
+}
 EXPECTED = {"functionality": {"C1": "PASS", "E1": "PASS", "E1-v1": "PASS"},
             "calibration_av": {"C1": "NOT_DETECTED", "CB1": "NOT_DETECTED", "E1": "NOT_DETECTED"},
             "rule": {"target": "C1", "decision": "ACCEPTED", "freeze": "FROZEN"},
             "final_av": {"E1-v1": "NOT_DETECTED", "EB1": "NOT_DETECTED"},
             "final_yara": {"E1": "MATCHED", "E1-v1": "MATCHED", "EB1": "NOT_MATCHED"},
             "guard_refusals": 2,
+            "model_control": {"rule": {"outcome": "ACCEPTED", "repairs": 1,
+                                       "first_rejection": "REJECTED_CHANGED_COPY_MATCH"},
+                              "code": "NOT_RUN_TOOLCHAIN_NOT_CHOSEN"},
+            "rule_session": {"C1": {"outcome": "ACCEPTED", "repairs": 1,
+                                    "first_rejection": "REJECTED_FEATURE_NOT_IN_DESCRIPTION"}},
+            # Hand count from the prepared responses: two attempts, four requests, two repairs.
+            "costs": {"rule_control": {"attempts": 1, "requests": 2, "repairs": 1, "refusals": 0, "failures": 0,
+                                       "model_seconds": 2.5, "manual_wait_seconds": 0.0, "usable": [1, 1]},
+                      "rule": {"attempts": 1, "requests": 2, "repairs": 1, "refusals": 0, "failures": 0,
+                               "model_seconds": 3.5, "manual_wait_seconds": 0.0, "usable": [1, 1]}},
             # Hand count: harmless files are never AV-detected; the rule matches the two baseline copies.
             "accounting": {"supplementation": "EVALUATED", "paired_records": 3,
                            "recall": {"av": [0, 2], "yara": [2, 2], "combined": [2, 2]},
                            "fpr": {"av": [0, 1], "yara": [0, 1], "combined": [0, 1]}}}
-PHASES = ("plan", "functionality", "calibration_av", "rules", "final_av", "final_yara", "accounting")
+PHASES = ("plan", "model_control", "functionality", "calibration_av", "rules", "final_av", "final_yara",
+          "accounting")
 
 
 def now():
@@ -117,10 +160,19 @@ class RehearsalRun:
     def done(self, phase):
         if self.root is None:
             return False
-        marker = {"plan": "plan.json", "functionality": "manifest.csv", "calibration_av": "calibration-av.json",
+        marker = {"plan": "plan.json", "model_control": "model-control.json", "functionality": "manifest.csv", "calibration_av": "calibration-av.json",
                   "rules": "rules/freeze/freeze.json", "final_av": "final-av.json",
                   "final_yara": "final-yara.json", "accounting": "accounting.json"}[phase]
+        if phase == "accounting":
+            return self._accounting_complete()
         return (self.root / marker).is_file()
+
+    def _accounting_complete(self):
+        """Only a whole, readable final report marks accounting as complete."""
+        try:
+            return "expected_comparison" in read(self.root / "accounting.json")
+        except (OSError, ValueError):
+            return False
 
     def next_phase(self):
         return next((phase for phase in PHASES if not self.done(phase)), None)
@@ -206,18 +258,79 @@ class RehearsalRun:
         write_json(self.root / "plan" / "assignment-benign.json", benign)
         write_json(self.root / "plan" / "card.json", CARD)
         write_json(self.root / "plan" / "stand-ins.json", {"run_id": self.run_id, "files": files,
-                                                          "derived": derived, "candidate_rule": CANDIDATE})
+                                                          "derived": derived})
+        write_json(self.root / "plan" / "model-responses.json", RESPONSES)
+        # The rule control's marker program is copied into the plan and hashed with it.
+        (self.root / "plan" / "control-marker.bin").write_bytes(
+            Path(self.inputs["programs"]["baseline"]["path"]).read_bytes())
+        setup = model_adapter.fix_setup(self.root / "model" / "setup", model_id="simulated-rehearsal-model",
+                                        access="prepared responses in the frozen plan", mode="simulated",
+                                        settings=SETTINGS, templates=TEMPLATES)
         write_json(self.root / "expected.json", {"written_at_utc": now(), "before_any_check": True, **EXPECTED})
         catalog = self.catalog()
         dataset_plan.check_coverage(catalog, [originals, benign])
         hashed = ["plan/assignment-originals.json", "plan/assignment-benign.json", "plan/card.json",
-                  "plan/stand-ins.json", "expected.json", *("derived/" + d["sample_id"] + ".bin" for d in derived)]
+                  "plan/stand-ins.json", "plan/model-responses.json", "plan/control-marker.bin", "model/setup/setup.json", "expected.json", *("derived/" + d["sample_id"] + ".bin" for d in derived)]
         write_json(self.root / "plan.json", {
             "schema": 1, "kind": "rehearsal_plan", "run_id": self.run_id, "frozen_at_utc": now(),
             "protocol_version": PROTOCOL, "catalog_sha256": catalog["catalog_sha256"],
             "hashes": {name: aegis.digest(self.root / name) for name in hashed},
-            "card_sha256": functionality_card.card_sha256(CARD), "experiment_results": False})
+            "card_sha256": functionality_card.card_sha256(CARD), "model_setup_id": setup["setup_id"],
+            "experiment_results": False})
         return read(self.root / "plan.json")
+
+    # --- model access ------------------------------------------------------------
+    def model(self):
+        """The fixed setup, its templates, the simulated adapter, the private exchange store and the log."""
+        self.plan()
+        setup, templates = model_adapter.load_setup(self.root / "model" / "setup")
+        adapter = model_adapter.SimulatedAdapter(read(self.root / "plan" / "model-responses.json"))
+        return {"setup": setup, "templates": templates, "adapter": adapter,
+                "store": model_adapter.ExchangeStore(self.root / "model" / "exchanges"),
+                "log": generation_log.GenerationLog(self.root / "model" / "log")}
+
+    def _yara_files(self, lab, text, contents, label):
+        """Write control files into the run folder and check `text` on them in state F."""
+        folder = self.root / "control" / (label + "-" + uuid.uuid4().hex[:8])
+        folder.mkdir(parents=True)
+        files, sources = [], {}
+        for key, content in contents.items():
+            path = folder / (key + ".bin")
+            path.write_bytes(content)
+            files.append({"sample_id": key, "sha256": hashlib.sha256(content).hexdigest(), "path": "files/" + key + ".bin"})
+            sources[key] = path
+        cycle, report = lab.candidate(text, files, sources, run_id=self.run_id)
+        write_json(folder / "check.json", {"cycle": cycle.name, "report_sha256": aegis.digest(cycle / "report.json")})
+        return report
+
+    # --- 1a. model control ----------------------------------------------------------
+    def model_control(self, lab):
+        self.plan()
+        if self.done("model_control"):
+            raise ValueError("The model control is already recorded")
+        model = self.model()
+        plan, _ = self.plan()  # re-checks every planned hash, the marker copy included
+        content = (self.root / "plan" / "control-marker.bin").read_bytes()
+        if hashlib.sha256(content).hexdigest() != plan["hashes"]["plan/control-marker.bin"]:
+            raise ValueError("The rule control's marker program changed after the plan was frozen")
+
+        def run_rule(text, files):
+            report = self._yara_files(lab, text, files, "rule-control")
+            results = report["results"]
+            status = {key: value["status"] for key, value in results["matches"].items()}
+            compiled = None if report.get("technical_error") else results["compiled"]
+            return {"compiled": compiled, "errors": results["compile_errors"],
+                    "matches": {key: {"MATCHED": True, "NOT_MATCHED": False}.get(value) for key, value in status.items()}}
+
+        rule = generation.rule_control(log=model["log"], adapter=model["adapter"], store=model["store"],
+                                       setup=model["setup"], templates=model["templates"], content=content,
+                                       marker=MARKER, replacement=CHANGED_MARKER, run_rule=run_rule)
+        code = {"control": "code", "passed": False, "outcome": "NOT_RUN_TOOLCHAIN_NOT_CHOSEN",
+                "reasons": ["The C/C++ toolchain for state F is not chosen yet (decision 3)"]}
+        write_json(self.root / "model-control.json", {"rule": rule, "code": code,
+                                                      "model_ready": generation.model_ready(code, rule),
+                                                      "at_utc": now()})
+        return rule, code
 
     # --- 2. functionality and manifest ---------------------------------------------
     def functionality(self, lab):
@@ -339,9 +452,12 @@ class RehearsalRun:
             raise ValueError("Calibration AV checks come first")
         if not (self.root / "guard-refusals.json").exists():
             self.guard_refusals(samples)
+        if not self.done("model_control"):
+            raise ValueError("The model control comes before rule preparation")
         av = self.av_decisions(samples)
         targets = rule_workflow.rule_targets(samples, av)
         (self.root / "rules").mkdir(exist_ok=True)
+        model = self.model()
         texts, decisions, version = {}, {}, None
         for target in targets:
             package = rule_workflow.rule_package(samples, av, target, self.root, self.collection)
@@ -350,13 +466,28 @@ class RehearsalRun:
                 key for key, row in samples.items() if row["split"] == "calibration" and row["kind"] == "benign")
             files = [{"sample_id": key, "sha256": samples[key]["sha256"], "path": "files/" + key + ".bin"}
                      for key in checked]
-            cycle, report = lab.candidate(CANDIDATE, files, self.sources(samples), run_id=self.run_id)
-            (self.root / "rules" / ("candidate-" + target + ".json")).write_bytes((cycle / "report.json").read_bytes())
-            decision = rule_workflow.accept_rule(CANDIDATE, package, samples, av, report["results"], self.root,
-                                                 self.collection)
+            checks = []
+
+            def check_rule(text, files=files):
+                cycle, report = lab.candidate(text, files, self.sources(samples), run_id=self.run_id)
+                checks.append(report)
+                (self.root / "rules" / ("candidate-%s-%d.json" % (target, len(checks)))).write_bytes(
+                    (cycle / "report.json").read_bytes())
+                return report["results"]
+
+            candidate = len(model["log"].candidates_used("rule", target)) + 1
+            record, outcome = generation.rule_attempt(
+                log=model["log"], adapter=model["adapter"], store=model["store"], setup=model["setup"],
+                templates=model["templates"], package=package, candidate=candidate, check_rule=check_rule,
+                decide=lambda text, results: rule_workflow.accept_rule(text, package, samples, av, results,
+                                                                       self.root, self.collection),
+                feedback=lambda results: rule_workflow.repair_feedback(samples, results))
+            if outcome is None or outcome[1].get("target_id") != target:
+                continue  # refused or rejected before any recorded check: the target has no decision
+            text, decision = outcome
             write_json(self.root / "rules" / ("decision-" + target + ".json"), decision)
-            texts["rule-" + target], decisions["rule-" + target] = CANDIDATE, decision
-            version = report.get("yara_version") or version
+            texts["rule-" + target], decisions["rule-" + target] = text, decision
+            version = next((r.get("yara_version") for r in reversed(checks) if r.get("yara_version")), version)
         if not version:
             raise ValueError("The YARA version was not recorded by the candidate check")
         text, record = rule_workflow.freeze(texts, decisions, samples, av, version, run_id=self.run_id)
@@ -382,11 +513,27 @@ class RehearsalRun:
         return [relative]
 
     # --- 7. one series and accounting ------------------------------------------------
+    ACCOUNTING_OUTPUTS = ("series.json", "observations.csv", "run.json", "tables")
+
+    def _set_aside_partial_accounting(self):
+        """Outputs of an accounting attempt that stopped are kept aside, never overwritten, so it can be retried."""
+        partial = [name for name in (*self.ACCOUNTING_OUTPUTS, "accounting.json") if (self.root / name).exists()]
+        if not partial:
+            return None
+        folder = self.root / ("accounting-attempt-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f"))
+        folder.mkdir()
+        for name in partial:
+            (self.root / name).rename(folder / name)
+        return folder
+
     def accounting(self):
         samples = self.samples()
         for phase in ("calibration_av", "rules", "final_av", "final_yara"):
             if not self.done(phase):
                 raise ValueError("Phase not finished: " + phase)
+        if self.done("accounting"):
+            raise ValueError("Accounting is already complete for this run")
+        self._set_aside_partial_accounting()
         reports = sorted(p.relative_to(self.root).as_posix() for p in (self.root / "reports").glob("*.json"))
         for relative in reports:
             report = scan_bridge.load_report(self.root, relative)
@@ -409,11 +556,26 @@ class RehearsalRun:
                            "segment_id": split["yara"][0]["segment_id"] if split["yara"] else None}}
         write_json(self.root / "run.json", config)
         result = aegis.run(self.root / "run.json", self.root / "manifest.csv", self.root / "observations.csv")
-        comparison = self.compare(samples, reports, result)
-        write_json(self.root / "accounting.json", {**result, "expected_comparison": comparison})
+        records = generation_log.GenerationLog(self.root / "model" / "log", create=False).records()
+        folder = self.root / "tables"
+        folder.mkdir(exist_ok=False)
+        for name, content in cost_table.tables(records, result).items():
+            with (folder / name).open("x", encoding="utf-8", newline="") as stream:
+                stream.write(content)
+        comparison = self.compare(samples, reports, result, records)
+        self._publish(self.root / "accounting.json", {**result, "expected_comparison": comparison})
         return result, comparison
 
-    def compare(self, samples, reports, result):
+    @staticmethod
+    def _publish(path, value):
+        """Write a whole file next to its final name, then rename it into place; never overwrite."""
+        temporary = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".partial")
+        write_json(temporary, value)
+        if path.exists():
+            raise ValueError("Refusing to replace an existing final report: " + path.name)
+        temporary.rename(path)
+
+    def compare(self, samples, reports, result, records):
         """Recorded outcomes beside the outcomes written down in the frozen plan."""
         expected = read(self.root / "expected.json")
         observed = {"calibration_av": {}, "final_av": {}, "final_yara": {}}
@@ -433,6 +595,28 @@ class RehearsalRun:
         observed["rule"] = {"target": target, "decision": read(decision)["status"] if decision.is_file() else None,
                             "freeze": freeze["status"]}
         observed["guard_refusals"] = len(read(self.root / "guard-refusals.json")["refusals"])
+        control = read(self.root / "model-control.json")
+        by_task = {}
+        for record in records:
+            by_task.setdefault((record["task"], record["subject"]), []).append(record)
+
+        def session(task, subject):
+            (record, *_) = by_task.get((task, subject), [None])
+            if record is None:
+                return None
+            statuses = record["artifacts"].get("turn_statuses") or []
+            return {"outcome": record["outcome"], "repairs": record["repairs"],
+                    "first_rejection": statuses[0] if record["repairs"] and statuses else None}
+        observed["model_control"] = {"rule": session("rule_control", "marker-program"),
+                                     "code": control["code"]["outcome"]}
+        observed["rule_session"] = {target: session("rule", target) for target in expected["rule_session"]}
+        figures = cost_table.costs(records)
+        observed["costs"] = {task: {"attempts": item["attempts"], "requests": item["requests"],
+                                    "repairs": item["repairs"], "refusals": item["refusals"],
+                                    "failures": item["failures"], "model_seconds": item["model_seconds"],
+                                    "manual_wait_seconds": item["manual_wait_seconds"],
+                                    "usable": [item["usable_share"]["numerator"], item["usable_share"]["denominator"]]}
+                             for task, item in figures.items()}
         supplement = result["supplementation"]
         tools = supplement.get("tools", {})
         fraction = lambda value: [value["numerator"], value["denominator"]]
@@ -442,5 +626,5 @@ class RehearsalRun:
                                              if t in tools},
                                   "fpr": {t: fraction(tools[t]["fpr"]) for t in ("av", "yara", "combined") if t in tools}}
         return {key: {"expected": expected[key], "observed": observed[key], "same": expected[key] == observed[key]}
-                for key in ("functionality", "calibration_av", "rule", "final_av", "final_yara", "guard_refusals",
-                            "accounting")}
+                for key in ("model_control", "functionality", "calibration_av", "rule_session", "rule", "final_av",
+                            "final_yara", "guard_refusals", "accounting", "costs")}

@@ -61,11 +61,13 @@ class FakeYara(Clock):
         if arguments[1] == "--version":
             return {"exit_code": 0, "stdout": "4.6.0\n", "stderr": ""}
         _, _, rules, target = arguments
-        content = Path(target).read_bytes()
-        marker = "AEGIS_REHEARSAL_BASELINE".encode("utf-16le")
-        hit = marker in content and "AEGIS_REHEARSAL_BASELINE" in Path(rules).read_text()
-        return {"exit_code": 0, "stdout": ("Aegis_Rehearsal_Baseline_Program " + target + "\n") if hit else "",
-                "stderr": ""}
+        content, text = Path(target).read_bytes(), Path(rules).read_text()
+        if not content:
+            return {"exit_code": 0, "stdout": "", "stderr": ""}  # the empty compile-check file
+        # The rule's single wide string, searched in UTF-16 as YARA's `wide` would.
+        needle, name = text.split('"')[1], text.split()[1]
+        hit = needle.encode("utf-16le") in content
+        return {"exit_code": 0, "stdout": (name + " " + target + "\n") if hit else "", "stderr": ""}
 
 
 class RehearsalTests(unittest.TestCase):
@@ -144,6 +146,7 @@ class RehearsalTests(unittest.TestCase):
 
     def whole_run(self):
         self.run.prepare_plan()
+        self.run.model_control(self.lab)
         self.run.functionality(self.lab)
         self.run.calibration_av(self.lab, 10)
         self.run.rules(self.lab)
@@ -165,11 +168,25 @@ class RehearsalTests(unittest.TestCase):
             report = json.loads((self.run.root / relative).read_text())
             checked |= {report["sample_id"]} if report["kind"] == "av_check" else {f["sample_id"] for f in report["files"]}
         self.assertEqual(checked, {"C1", "CB1", "E1", "E1-v1", "EB1"})
+        control = json.loads((self.run.root / "model-control.json").read_text())
+        self.assertEqual((control["rule"]["passed"], control["code"]["outcome"], control["model_ready"]),
+                         (True, "NOT_RUN_TOOLCHAIN_NOT_CHOSEN", False))
+        records = rehearsal_run.generation_log.GenerationLog(self.run.root / "model" / "log", create=False).records()
+        self.assertEqual([(r["task"], r["outcome"], r["repairs"], r["artifacts"]["turn_statuses"]) for r in records],
+                         [("rule_control", "ACCEPTED", 1, ["REJECTED_CHANGED_COPY_MATCH", "ACCEPTED"]),
+                          ("rule", "ACCEPTED", 1, ["REJECTED_FEATURE_NOT_IN_DESCRIPTION", "ACCEPTED"])])
+        self.assertEqual(sorted(p.name for p in (self.run.root / "tables").iterdir()),
+                         ["costs.csv", "costs.tex", "generation.csv", "incomplete_checks.csv"])
+        # The frozen rule is the model's accepted answer, and no model text reaches the log.
+        frozen = (self.run.root / "rules" / "freeze" / "frozen.yar").read_text()
+        self.assertIn("AEGIS_REHEARSAL_BASELINE", frozen)
+        self.assertNotIn("AEGIS_REHEARSAL", json.dumps(records))
         refusals = json.loads((self.run.root / "guard-refusals.json").read_text())["refusals"]
         self.assertEqual([r["attempt"] for r in refusals], ["av_without_freeze", "yara_without_freeze"])
 
     def test_the_guard_stops_final_checks_before_the_freeze(self):
         self.run.prepare_plan()
+        self.run.model_control(self.lab)
         self.run.functionality(self.lab)
         self.run.calibration_av(self.lab, 10)
         with self.assertRaisesRegex((ValueError, OSError), "rule set is final|freeze|No such file"):
@@ -209,11 +226,70 @@ class RehearsalTests(unittest.TestCase):
 
     def whole_run_until_reports(self):
         self.run.prepare_plan()
+        self.run.model_control(self.lab)
         self.run.functionality(self.lab)
         self.run.calibration_av(self.lab, 10)
         self.run.rules(self.lab)
         self.run.final_av(self.lab, 10)
         self.run.final_yara(self.lab)
+
+    def test_the_rule_control_uses_the_planned_marker_copy(self):
+        self.run.prepare_plan()
+        planned = (self.run.root / "plan" / "control-marker.bin").read_bytes()
+        # A later change of the source program does not reach the control ...
+        Path(self.inputs["programs"]["baseline"]["path"]).write_bytes(program("AEGIS_REHEARSAL_CHANGEDX"))
+        self.run.model_control(self.lab)
+        checked = [p.read_bytes() for p in (self.run.root / "control").glob("*/marker.bin")]
+        self.assertTrue(checked and all(content == planned for content in checked))
+
+    def test_a_changed_planned_marker_copy_stops_the_control(self):
+        self.run.prepare_plan()
+        (self.run.root / "plan" / "control-marker.bin").write_bytes(program("AEGIS_REHEARSAL_CHANGEDX"))
+        with self.assertRaisesRegex(ValueError, "frozen plan changed"):
+            self.run.model_control(self.lab)
+
+    def test_accounting_can_be_retried_after_a_stop(self):
+        self.whole_run_until_reports()
+        log = self.run.root / "model" / "log"
+        (first, *_) = sorted(log.glob("*.json"))
+        copy = log / ("999-" + first.name.split("-", 1)[1])
+        copy.write_text(first.read_text())
+        with self.assertRaisesRegex(ValueError, "more than once"):
+            self.run.accounting()
+        self.assertTrue((self.run.root / "series.json").exists())
+        copy.unlink()
+        result, comparison = self.run.accounting()
+        self.assertTrue(all(item["same"] for item in comparison.values()), comparison)
+        kept = list(self.run.root.glob("accounting-attempt-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertTrue((kept[0] / "series.json").is_file())
+        with self.assertRaisesRegex(ValueError, "already complete"):
+            self.run.accounting()
+
+    def test_an_interrupted_final_report_does_not_mark_accounting_complete(self):
+        self.whole_run_until_reports()
+        original = rehearsal_run.write_json
+
+        def failing(path, value):
+            if Path(path).name.startswith(".accounting.json"):
+                Path(path).write_text('{"run_id": "partial')  # a write that stopped half way
+                raise OSError("disk full")
+            return original(path, value)
+        rehearsal_run.write_json = failing
+        try:
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.run.accounting()
+        finally:
+            rehearsal_run.write_json = original
+        self.assertFalse((self.run.root / "accounting.json").exists())
+        self.assertFalse(self.run.done("accounting"))
+        # Even a broken final file left by older code is not taken as complete, and is set aside on retry.
+        (self.run.root / "accounting.json").write_text('{"run_id": "partial')
+        self.assertFalse(self.run.done("accounting"))
+        result, comparison = self.run.accounting()
+        self.assertTrue(self.run.done("accounting"))
+        self.assertTrue(all(item["same"] for item in comparison.values()))
+        self.assertTrue(any((p / "accounting.json").is_file() for p in self.run.root.glob("accounting-attempt-*")))
 
     def test_stand_ins_are_distinct_copies_with_their_own_work_directory(self):
         content = rehearsal_run.stand_in(program("AEGIS_REHEARSAL_BASELINE"), OLD, "2" * 32)

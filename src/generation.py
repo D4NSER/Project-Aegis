@@ -116,7 +116,7 @@ def rule_attempt(*, log, adapter, store, setup, templates, package, candidate, c
     `rule_workflow.repair_feedback` (compile errors and calibration responses only)."""
     session = Session(log, adapter, store, setup, templates, "rule", package["target_id"], candidate, "rule")
     prompt = render(templates["rule"], {"description": json.dumps(package["description"], indent=1)})
-    kind = "initial"
+    kind, history = "initial", []
     while True:
         response = session.ask(prompt, kind)
         if response["refused"]:
@@ -130,7 +130,8 @@ def rule_attempt(*, log, adapter, store, setup, templates, package, candidate, c
             results = check_rule(text)
             decision = decide(text, results)
             repair = feedback(results)
-        artifacts = {"rule_sha256": sha(text), "decision": decision}
+        history.append(decision["status"])
+        artifacts = {"rule_sha256": sha(text), "decision": decision, "turn_statuses": list(history)}
         if decision["status"] == "ACCEPTED":
             return session.attempt.finish("ACCEPTED", [], **artifacts), (text, decision)
         if decision["status"] in RULE_REPAIRABLE and session.can_repair():
@@ -168,7 +169,7 @@ def rule_control(*, log, adapter, store, setup, templates, content, marker, repl
     files = {"marker": content, "changed": changed_marker_copy(content, marker, replacement)}
     session = Session(log, adapter, store, setup, templates, "rule_control", "marker-program", candidate, "rule")
     prompt = render(templates["rule"], {"description": json.dumps(description, indent=1)})
-    kind = "initial"
+    kind, history = "initial", []
     while True:
         response = session.ask(prompt, kind)
         if response["refused"]:
@@ -192,8 +193,9 @@ def rule_control(*, log, adapter, store, setup, templates, content, marker, repl
             else:
                 status, details = "ACCEPTED", []
             feedback = {"compile_errors": ran.get("errors", []), "matches": matches}
+        history.append(status)
         if status == "ACCEPTED" or status == "INCOMPLETE" or not session.can_repair():
-            record = session.attempt.finish(status, details, rule_sha256=sha(text))
+            record = session.attempt.finish(status, details, rule_sha256=sha(text), turn_statuses=list(history))
             break
         prompt, kind = session.repair_prompt("rule_repair", feedback), "repair"
     return {"control": "rule", "passed": record["outcome"] == "ACCEPTED", "attempt_id": record["attempt_id"],

@@ -68,8 +68,15 @@ class CostTableTests(Base):
                          (1, 2, 1, 0, 1.0))
 
     def test_tables_are_written_from_the_same_figures(self):
-        out = cost_table.tables(self.log.records(), {"run_id": "run-1", "mode": "rehearsal", "status_counts": {
-            "av:ERROR": 1, "yara:NOT_RUN": 2, "av:NOT_DETECTED": 5}})
+        row = lambda sid, split, av, yara, holdout=False: {"sample_id": sid, "split": split, "holdout": holdout,
+                                                            "av_status": av, "yara_status": yara}
+        report = {"run_id": "run-1", "mode": "rehearsal", "rows": [
+            row("C1", "calibration", "NOT_DETECTED", "NOT_RUN"),          # YARA is not planned here
+            row("CB1", "calibration", "NOT_DETECTED", "NOT_RUN"),         # nor here
+            row("H1", "calibration", "NOT_DETECTED", "INCONCLUSIVE", True),  # a held-out variant is planned
+            row("E1", "evaluation", "ERROR", "DETECTED"),
+            row("E2", "evaluation", "NOT_DETECTED", "NOT_RUN")]}          # planned but not run
+        out = cost_table.tables(self.log.records(), report)
         self.assertEqual(out["costs.csv"].splitlines(), [
             "task,attempts,requests,repairs,refusals,unusable,failures,model_seconds,manual_wait_seconds,"
             "researcher_changes,usable,usable_of",
@@ -83,7 +90,27 @@ class CostTableTests(Base):
                                                "rule,C1,1,1,0,0,0,0,0,1,1"])
         self.assertIn("Kodo variantai & 5 & 9 & 4 & 1 & 2 & 2/5 (40,0\\,\\%) & 9,5 & 60,0 & 1 \\\\", out["costs.tex"])
         self.assertEqual(out["incomplete_checks.csv"].splitlines(),
-                         ["tool,ERROR,INCONCLUSIVE,NOT_RUN", "av,1,0,0", "yara,0,0,2"])
+                         ["tool,ERROR,INCONCLUSIVE,NOT_RUN,not_planned", "av,1,0,0,0", "yara,0,1,1,2"])
+
+    def test_reports_of_empty_and_failed_rule_sets_are_accepted(self):
+        import aegis
+        from test_accounting import scenario
+        ws, observations = scenario(self.base / "accounting")
+        samples = ws.samples()
+        for status, expected_yara in (("EMPTY", {"ERROR": 0, "INCONCLUSIVE": 0, "NOT_RUN": 0}),
+                                      ("FAILED", {"ERROR": 0, "INCONCLUSIVE": 0, "NOT_RUN": 0})):
+            with self.subTest(ruleset=status):
+                report = {"run_id": "run-1", "mode": "control",
+                          **aegis.summarize(samples, observations, status)}
+                if status == "EMPTY":
+                    self.assertTrue(any(r["yara_status"] == "EMPTY_RULESET" for r in report["rows"]))
+                checks = cost_table.incomplete_checks(report)
+                self.assertEqual({k: checks["yara"][k] for k in expected_yara}, expected_yara)
+                self.assertIn("incomplete_checks.csv", cost_table.tables(self.log.records(), report))
+        # Under a FAILED set no YARA check is planned, so every YARA NOT_RUN is counted apart.
+        failed = {"run_id": "run-1", "mode": "control", **aegis.summarize(samples, observations, "FAILED")}
+        yara_not_run = sum(r["yara_status"] == "NOT_RUN" for r in failed["rows"])
+        self.assertEqual(cost_table.incomplete_checks(failed)["yara"]["not_planned"], yara_not_run)
 
     def test_a_repeated_record_stops_the_table(self):
         (first, *_) = sorted((self.base / "log").glob("*.json"))
